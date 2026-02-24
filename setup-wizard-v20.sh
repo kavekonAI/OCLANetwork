@@ -439,12 +439,17 @@ setup_nas() {
     fi
 
     # Create structure — each dir has exactly ONE writer, preventing NFS lock issues
+    # [NF1] Non-fatal: dirs may already exist, or NFS sec=sys may reject writes from this UID;
+    # try user-space first, fall back to sudo (no root_squash), then continue regardless.
     info "Creating NAS directory structure (write-once-read-many design)..."
-    mkdir -p /mnt/nas/agents/{commander,content-creator,researcher,linkedin,librarian}/{data,output,logs}
-    mkdir -p /mnt/nas/agents/quant-trading/{data/{realtime,snapshots,premarket,news},signals,strategies,logs}
-    mkdir -p /mnt/nas/agents/virs-training/{data,checkpoints,output,logs}
-    mkdir -p /mnt/nas/shared/media-assets
-    mkdir -p /mnt/nas/backups/daily
+    mkdir -p /mnt/nas/agents/{commander,content-creator,researcher,linkedin,librarian}/{data,output,logs} 2>/dev/null || \
+        sudo mkdir -p /mnt/nas/agents/{commander,content-creator,researcher,linkedin,librarian}/{data,output,logs} 2>/dev/null || true
+    mkdir -p /mnt/nas/agents/quant-trading/{data/{realtime,snapshots,premarket,news},signals,strategies,logs} 2>/dev/null || \
+        sudo mkdir -p /mnt/nas/agents/quant-trading/{data/{realtime,snapshots,premarket,news},signals,strategies,logs} 2>/dev/null || true
+    mkdir -p /mnt/nas/agents/virs-training/{data,checkpoints,output,logs} 2>/dev/null || \
+        sudo mkdir -p /mnt/nas/agents/virs-training/{data,checkpoints,output,logs} 2>/dev/null || true
+    mkdir -p /mnt/nas/shared/media-assets /mnt/nas/backups/daily 2>/dev/null || \
+        sudo mkdir -p /mnt/nas/shared/media-assets /mnt/nas/backups/daily 2>/dev/null || true
     ok "NAS directories created"
 
     # [GF2] Fix NAS UID ownership: gateway pods run as node user (UID 1000)
