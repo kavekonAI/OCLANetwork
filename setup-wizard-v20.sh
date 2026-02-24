@@ -834,7 +834,9 @@ spec:
         - name: data
           persistentVolumeClaim: { claimName: redis-pvc }
         - name: init-scripts
-          configMap: { name: redis-init }
+          configMap:
+            name: redis-init
+            defaultMode: 0755
 ---
 apiVersion: v1
 kind: Service
@@ -1042,9 +1044,9 @@ spec:
           command: [sh, -c]
           args:
             - |
-              mkdir -p /app && cd /app
+              mkdir -p /tmp/app && cd /tmp/app
               npm install redis 2>/dev/null
-              cat > /app/proxy.js << 'PROXYJS'
+              cat > /tmp/app/proxy.js << 'PROXYJS'
               const http = require("http");
               const https = require("https");
               const { URL } = require("url");
@@ -1238,10 +1240,44 @@ spec:
                   if (!res.headersSent) { res.writeHead(500); res.end("Proxy error"); }
                 }
               });
+              // [NF4] HTTPS CONNECT tunnel handler — required for npm install and agent HTTPS calls
+              // Without this, CONNECT requests get 400 and npm fails silently
+              const net = require("net");
+              server.on("connect", async (req, clientSocket, head) => {
+                const [host, portStr] = (req.url || "").split(":");
+                const port = parseInt(portStr, 10) || 443;
+                const isBlocked = await redis.sIsMember("ocl:egress:blacklist", host).catch(() => false);
+                if (isBlocked) {
+                  clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+                  clientSocket.destroy();
+                  return;
+                }
+                const isWhitelisted = await redis.sIsMember("ocl:egress:whitelist", host).catch(() => false);
+                if (!isWhitelisted) {
+                  await redis.xAdd("ocl:security:audit", "*", {
+                    event: "whitelist_miss_connect", target: host,
+                    timestamp: new Date().toISOString()
+                  }).catch(() => {});
+                  clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+                  clientSocket.destroy();
+                  return;
+                }
+                const serverSocket = net.connect(port, host, () => {
+                  clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+                  if (head && head.length) serverSocket.write(head);
+                  serverSocket.pipe(clientSocket);
+                  clientSocket.pipe(serverSocket);
+                });
+                serverSocket.on("error", (err) => {
+                  console.error("CONNECT tunnel error:", host, err.message);
+                  clientSocket.destroy();
+                });
+                clientSocket.on("error", () => serverSocket.destroy());
+              });
               server.listen(8080, () => console.log("Egress proxy on :8080 (regex+reputation)"));
               })(); // end async IIFE
               PROXYJS
-              node /app/proxy.js
+              node /tmp/app/proxy.js
           ports: [{ containerPort: 8080 }]
           resources:
             requests: { memory: "128Mi", cpu: "50m" }
@@ -1264,7 +1300,7 @@ EGRESSEOF
     kubectl exec -n ocl-services deploy/redis -- redis-cli SADD ocl:egress:whitelist \
         "api.openai.com" "api.anthropic.com" "arxiv.org" "api.semanticscholar.org" \
         "api.github.com" "huggingface.co" "finance.yahoo.com" "api.alphavantage.co" \
-        "fred.stlouisfed.org" >/dev/null 2>&1 || true
+        "fred.stlouisfed.org" "registry.npmjs.org" >/dev/null 2>&1 || true
     echo ""; ok "Egress Proxy + regex blocklist + reputation whitelist"
 
     # ── NetworkPolicy — Agent Egress Lockdown [Gap Y3] ──
@@ -1325,11 +1361,12 @@ spec:
           serviceAccountName: jwt-rotator-sa
           containers:
             - name: rotator
-              image: bitnami/kubectl:1.29
+              image: alpine:3.19
               command: [sh, -c]
               args:
                 - |
                   set -e
+                  apk add --no-cache jq curl >/dev/null 2>&1
                   echo "Rotating JWT signing secret..."
 
                   # [FF2] JWT rotation with retry loop + Telegram alert on failure
@@ -1450,9 +1487,14 @@ spec:
 
                     exit 1
                   fi
+              volumeMounts:
+                - { name: kubectl-bin, mountPath: /usr/local/bin/kubectl, readOnly: true }
               resources:
                 requests: { memory: "64Mi", cpu: "50m" }
                 limits: { memory: "128Mi", cpu: "100m" }
+          volumes:
+            - name: kubectl-bin
+              hostPath: { path: /usr/local/bin/k3s, type: File }
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -2122,18 +2164,13 @@ generate_openclaw_config() {
     cat > "${OCL_DEPLOY}/configs/openclaw-${GATEWAY_TIER:-home}.json" << OCEOF
 {
   "gateway": {
-    "bind": "127.0.0.1",
+    "mode": "local",
+    "bind": "lan",
     "port": 18789,
     "auth": {
       "mode": "token",
       "token": "${gw_token}"
     }
-  },
-  "exec": { "ask": "on" },
-  "providers": {
-    "apiBase": "http://litellm-service.ocl-services:4000",
-    "masterKey": "\${LITELLM_MASTER_KEY}",
-    "directMode": ${direct_mode}
   },
   "agents": {
     "defaults": {
@@ -2148,7 +2185,7 @@ generate_openclaw_config() {
   "bindings": [
     {
       "agentId": "commander",
-      "match": { "channel": "telegram", "peer": { "kind": "direct" } }
+      "match": { "channel": "telegram" }
     }
   ],
   "channels": {
@@ -2191,6 +2228,17 @@ deploy_gateway_pod() {
     [ -z "$ocl_ver" ] && ocl_ver="${OCL_VERSION:-latest}"
     [ -z "$node_img" ] && node_img="node:22.14-slim"
 
+    # [NF5] Install openclaw on the HOST before deploying the pod.
+    # The container can't install it (git is required but not available in node:22.14-slim).
+    # Host-installed module is mounted via hostPath — no in-container npm install needed.
+    local ocl_module_path
+    ocl_module_path="$(npm root -g)/openclaw"
+    if [ ! -d "${ocl_module_path}" ]; then
+        info "Installing openclaw@${ocl_ver} on host for container mount..."
+        npm install -g "openclaw@${ocl_ver}" >/dev/null 2>&1 || true
+        ocl_module_path="$(npm root -g)/openclaw"
+    fi
+
     # Adaptive resource limits: Phase 0 (8GB) vs Phase 1+ (16GB+)
     local gw_mem_request="1Gi" gw_mem_limit="4Gi" gw_cpu_request="500m" gw_cpu_limit="2"
     if [ "${OPTIMIZER_ACTIVE:-true}" = "false" ]; then
@@ -2217,6 +2265,7 @@ spec:
     metadata:
       labels: { app: "gateway-${TIER}", tier: "${TIER}" }
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -2231,17 +2280,13 @@ spec:
           command: [sh, -c]
           args:
             - |
-              # [JF2] Use OCL_PINNED_VERSION env var at runtime — NOT baked-in value
-              # Enables ocl-upgrade to change version by patching the env var
-              if ! npm install -g "openclaw@\${OCL_PINNED_VERSION}"; then
-                echo "FATAL: Failed to install openclaw@\${OCL_PINNED_VERSION}"
-                exit 1
-              fi
+              # [NF5] openclaw is pre-installed on the host and mounted via hostPath.
+              # In-container npm install is not used: node:slim lacks git required by openclaw deps.
               mkdir -p /home/node/.openclaw
               cp /config/openclaw.json /home/node/.openclaw/openclaw.json
               cp /souls/*.md /home/node/.openclaw/ 2>/dev/null || true
-              echo "OpenClaw version: \$(openclaw --version 2>/dev/null || echo \${OCL_PINNED_VERSION})"
-              openclaw gateway --port 18789 --verbose
+              echo "OpenClaw version: \$(node /host-openclaw/openclaw.mjs --version 2>/dev/null || echo \${OCL_PINNED_VERSION})"
+              exec node /host-openclaw/openclaw.mjs gateway --port 18789 --verbose
           ports: [{ containerPort: 18789 }]
           envFrom:
             - secretRef: { name: telegram-tokens, optional: true }
@@ -2266,13 +2311,14 @@ fi)
             - name: HTTPS_PROXY
               value: "http://egress-proxy-service.ocl-services:8080"
             - name: NO_PROXY
-              value: "redis-service.ocl-services,litellm-service.ocl-services,ollama-service.ocl-services,localhost,127.0.0.1"
+              value: "redis-service.ocl-services,litellm-service.ocl-services,ollama-service.ocl-services,localhost,127.0.0.1,registry.npmjs.org"
           volumeMounts:
             - { name: config, mountPath: /config }
             - { name: souls, mountPath: /souls }
             - { name: nas, mountPath: /mnt/nas }
             - { name: local-ssd, mountPath: /home/ocl-local }
             - { name: api-secrets, mountPath: /run/secrets, readOnly: true }
+            - { name: host-openclaw, mountPath: /host-openclaw, readOnly: true }
           resources:
             requests: { memory: "${gw_mem_request}", cpu: "${gw_cpu_request}" }
             limits: { memory: "${gw_mem_limit}", cpu: "${gw_cpu_limit}" }
@@ -2289,6 +2335,8 @@ fi)
           secret:
             secretName: llm-api-keys
             defaultMode: 0400
+        - name: host-openclaw
+          hostPath: { path: "${ocl_module_path}", type: Directory }
 ---
 apiVersion: v1
 kind: Service
@@ -3403,7 +3451,7 @@ spec:
             - name: local-ssd
               hostPath: { path: /home/ocl-local, type: DirectoryOrCreate }
             - name: nas
-              persistentVolumeClaim: { claimName: nas-pvc }
+              hostPath: { path: /mnt/nas, type: Directory }
 NASSYNCEOF
     kubectl apply -f "${K8S_DIR}/ocl-nas-sync.yaml" >/dev/null 2>&1
     ok "ocl-nas-sync CronJob (SSD-first write, NAS sync every 5 min)"
