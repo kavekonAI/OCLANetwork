@@ -478,6 +478,13 @@ setup_nas() {
 collect_api_keys_secure() {
     step 3 10 "API Keys (Secure — memory only, never written to disk)"
 
+    # [NF2] Namespaces are created in Step 5 but secrets are written here (Step 3).
+    # Ensure they exist now so kubectl apply doesn't fail and trigger set -e exit.
+    kubectl create namespace ocl-services --dry-run=client -o yaml 2>/dev/null \
+        | kubectl apply -f - >/dev/null 2>&1 || true
+    kubectl create namespace ocl-agents --dry-run=client -o yaml 2>/dev/null \
+        | kubectl apply -f - >/dev/null 2>&1 || true
+
     echo ""
     info "Keys are read silently and injected directly into Kubernetes Secrets."
     info "They are NEVER written to any file on this machine."
