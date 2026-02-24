@@ -664,10 +664,15 @@ select_agents() {
 set_budgets() {
     step 6 10 "Budget Configuration"
 
-    ask "Monthly budget cap for ALL agents (USD) [300]:"
+    ask "Monthly budget cap for ALL agents (USD) [300, or 0 for unlimited]:"
     read -r TOTAL_BUDGET
     TOTAL_BUDGET=${TOTAL_BUDGET:-300}
-    ok "Global budget: \$${TOTAL_BUDGET}/month"
+    if [ "${TOTAL_BUDGET}" = "0" ]; then
+        TOTAL_BUDGET="null"
+        ok "Global budget: unlimited"
+    else
+        ok "Global budget: \$${TOTAL_BUDGET}/month"
+    fi
 
     # ── Token Optimizer Toggle ──
     # Auto-detect existing optimizer state on re-run (hot-swap persistence)
