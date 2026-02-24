@@ -537,10 +537,12 @@ collect_api_keys_secure() {
         echo "  LITELLM_MASTER_KEY: \"${master_key}\""
         echo "  JWT_SIGNING_SECRET: \"${jwt_secret}\""
         echo "  AGENT_SIGNATURE_KEY: \"${jwt_secret}\""
-        [ -n "$anthro" ] && echo "  ANTHROPIC_API_KEY: \"${anthro}\""
-        [ -n "$oai" ]    && echo "  OPENAI_API_KEY: \"${oai}\""
-        [ -n "$goog" ]   && echo "  GOOGLE_API_KEY: \"${goog}\""
-        [ -n "$deep" ]   && echo "  DEEPSEEK_API_KEY: \"${deep}\""
+        # [NF3] || true: when a provider is skipped the [ -n ] test returns 1.
+        # That becomes the pipe-subshell's exit code → pipefail kills the script.
+        [ -n "$anthro" ] && echo "  ANTHROPIC_API_KEY: \"${anthro}\"" || true
+        [ -n "$oai" ]    && echo "  OPENAI_API_KEY: \"${oai}\""    || true
+        [ -n "$goog" ]   && echo "  GOOGLE_API_KEY: \"${goog}\""   || true
+        [ -n "$deep" ]   && echo "  DEEPSEEK_API_KEY: \"${deep}\"" || true
     } | kubectl apply -f - >/dev/null 2>&1
 
     # [JF1] Replicate secret into ocl-agents namespace
@@ -549,7 +551,7 @@ collect_api_keys_secure() {
     # The canonical copy lives in ocl-services (used by LiteLLM + JWT rotator).
     kubectl get secret llm-api-keys -n ocl-services -o json 2>/dev/null \
         | jq '.metadata.namespace = "ocl-agents" | del(.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp)' \
-        | kubectl apply -f - >/dev/null 2>&1
+        | kubectl apply -f - >/dev/null 2>&1 || true  # [NF3] non-fatal: keys still in ocl-services
 
     ok "Keys stored in K8s Secret (ocl-services + ocl-agents)"
 
@@ -3254,16 +3256,17 @@ collect_api_keys_unattended() {
         echo "  LITELLM_MASTER_KEY: \"${master_key}\""
         echo "  JWT_SIGNING_SECRET: \"${jwt_secret}\""
         echo "  AGENT_SIGNATURE_KEY: \"${jwt_secret}\""
-        [ -n "${anthro:-}" ] && echo "  ANTHROPIC_API_KEY: \"${anthro}\""
-        [ -n "${oai:-}" ]    && echo "  OPENAI_API_KEY: \"${oai}\""
-        [ -n "${goog:-}" ]   && echo "  GOOGLE_API_KEY: \"${goog}\""
-        [ -n "${deep:-}" ]   && echo "  DEEPSEEK_API_KEY: \"${deep}\""
+        # [NF3] || true: skipped provider returns 1 → pipefail kills script without it
+        [ -n "${anthro:-}" ] && echo "  ANTHROPIC_API_KEY: \"${anthro}\"" || true
+        [ -n "${oai:-}" ]    && echo "  OPENAI_API_KEY: \"${oai}\""    || true
+        [ -n "${goog:-}" ]   && echo "  GOOGLE_API_KEY: \"${goog}\""   || true
+        [ -n "${deep:-}" ]   && echo "  DEEPSEEK_API_KEY: \"${deep}\"" || true
     } | kubectl apply -f - >/dev/null 2>&1
 
     # [JF1] Replicate to ocl-agents namespace
     kubectl get secret llm-api-keys -n ocl-services -o json 2>/dev/null \
         | jq '.metadata.namespace = "ocl-agents" | del(.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp)' \
-        | kubectl apply -f - >/dev/null 2>&1
+        | kubectl apply -f - >/dev/null 2>&1 || true  # [NF3] non-fatal
 
     anthro=""; oai=""; goog=""; deep=""; master_key=""; jwt_secret=""
     unset anthro oai goog deep master_key jwt_secret
