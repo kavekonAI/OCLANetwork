@@ -915,7 +915,7 @@ EOF
     kubectl create configmap litellm-config \
         --namespace=ocl-services \
         --from-file=config.yaml="${OCL_DEPLOY}/configs/litellm-config.yaml" \
-        --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1 || true
 
     cat > "${K8S_DIR}/litellm.yaml" << 'EOF'
 apiVersion: apps/v1
@@ -968,9 +968,9 @@ EOF
     # ── NAS PersistentVolume ──
     progress_bar 5 $T "NAS PV"
     local nas_ip
-    nas_ip=$(mount | grep /mnt/nas | awk -F: '{print $1}' | head -1)
+    nas_ip=$(mount | grep /mnt/nas | awk -F: '{print $1}' | head -1 || echo "")
     local nas_path
-    nas_path=$(mount | grep /mnt/nas | awk '{print $1}' | sed "s|${nas_ip}:||" | head -1)
+    nas_path=$(mount | grep /mnt/nas | awk '{print $1}' | sed "s|${nas_ip}:||" | head -1 || echo "")
     if [ -z "$nas_ip" ]; then
         warn "Could not determine NAS IP from mount table — is /mnt/nas mounted?"
         warn "NAS PV will use placeholder values. Fix with: kubectl edit pv nas-pv"
@@ -2172,13 +2172,13 @@ deploy_gateway_pod() {
     kubectl create configmap "openclaw-${TIER}-config" \
         --namespace=ocl-agents \
         --from-file=openclaw.json="${OCL_DEPLOY}/configs/openclaw-${TIER}.json" \
-        --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1 || true
 
     # Copy SOUL files into a configmap
     kubectl create configmap openclaw-souls \
         --namespace=ocl-agents \
         --from-file="${SOULS_DIR}/" \
-        --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1 || true
 
     # Read pinned versions from state
     local ocl_ver=$(read_state "openclaw" | tr -d '"')
