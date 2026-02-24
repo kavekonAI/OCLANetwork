@@ -25,7 +25,7 @@ emergency_cleanup() {
     # Scrub log file (always, not just on failure — secrets may appear in successful runs)
     if [ -f "${OCL_LOG_TRAP}" ]; then
         for pat in "sk-ant-" "sk-proj-" "sk-or-" "eyJ" "JWT_SIGNING" "ANTHROPIC_API" "OPENAI_API"; do
-            sedi "s/${pat}[a-zA-Z0-9_.=/-]*/<REDACTED>/g" "${OCL_LOG_TRAP}" 2>/dev/null || true
+            sedi "s|${pat}[a-zA-Z0-9_.=/-]*|<REDACTED>|g" "${OCL_LOG_TRAP}" 2>/dev/null || true
         done
     fi
     # [HF2] Shred .env file on ANY exit (success, failure, or interrupt)
@@ -71,8 +71,10 @@ exec > >(tee -a "${OCL_LOG}") 2>&1
 # Using -i.sedtmp + rm avoids the incompatibility entirely
 sedi() {
     sed -i.sedtmp "$@"
+    local rc=$?
     local f="${@: -1}"
     rm -f "${f}.sedtmp" 2>/dev/null || true
+    return $rc
 }
 
 banner() {
@@ -253,6 +255,39 @@ show_menu() {
     read -r MENU_CHOICE
 }
 
+# ─── Memory Pre-flight Check ───
+check_system_resources() {
+    local mem_available_kb mem_total_kb mem_available_mb mem_total_mb
+    mem_available_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    mem_available_mb=$((mem_available_kb / 1024))
+    mem_total_mb=$((mem_total_kb / 1024))
+
+    info "System memory: ${mem_available_mb} MiB available / ${mem_total_mb} MiB total"
+
+    # Hard minimum: k3s (~512MB) + Redis (~256MB) + at least one gateway (~512MB)
+    local MIN_MB=1280
+    if [ "$mem_available_mb" -lt "$MIN_MB" ]; then
+        fail "Insufficient memory: ${mem_available_mb} MiB available, minimum ${MIN_MB} MiB required."
+        fail "k3s needs ~512 MiB, Redis ~256 MiB, gateways ~512 MiB each."
+        fail "Free up memory or add swap before running this script."
+        if [ "${UNATTENDED:-false}" = true ]; then
+            exit 1
+        else
+            warn "Continuing may result in OOM-killed pods."
+            ask "Continue anyway? [y/N]"
+            read -r reply
+            [[ "$reply" =~ ^[Yy]$ ]] || exit 1
+        fi
+    fi
+
+    # Warn if Ollama (local models) won't have enough memory
+    if [ "${OPTIMIZER_ACTIVE:-true}" = "true" ] && [ "$mem_available_mb" -lt 4096 ]; then
+        warn "Less than 4 GiB available — Ollama local models may cause OOM."
+        warn "Consider disabling Token Optimizer (OPTIMIZER_ACTIVE=false) for cloud-only routing."
+    fi
+}
+
 # ═══════════════════════════════════════════════════════════════════════
 # STEP 1 — PREREQUISITES
 # ═══════════════════════════════════════════════════════════════════════
@@ -397,7 +432,7 @@ setup_nas() {
         # [HF1][L9] fstab: delete any existing OCL NAS entry and re-add with current IP
         # Prevents "stale file handle" after NAS IP change (e.g., local→Tailscale)
         # Use grep -v piped to temp file instead of fragile sed delimiter
-        grep -v '[[:space:]]/mnt/nas[[:space:]]' /etc/fstab > /tmp/fstab.ocl.tmp 2>/dev/null && sudo mv /tmp/fstab.ocl.tmp /etc/fstab || true
+        (umask 077; grep -v '[[:space:]]/mnt/nas[[:space:]]' /etc/fstab > /tmp/fstab.ocl.tmp) 2>/dev/null && sudo mv /tmp/fstab.ocl.tmp /etc/fstab || { rm -f /tmp/fstab.ocl.tmp 2>/dev/null; true; }
         echo "${NAS_IP}:${NAS_PATH} /mnt/nas nfs nfsvers=4.1,defaults,_netdev,noexec 0 0" \
             | sudo tee -a /etc/fstab >/dev/null
         ok "NAS mounted (NFS v${actual_nfs:-$NFS_VER}) and fstab updated"
@@ -461,7 +496,7 @@ collect_api_keys_secure() {
     read -rs deep; echo ""
     [ -n "$deep" ] && ok "DeepSeek ✓ (fallback)" || warn "DeepSeek skipped"
 
-    if [ -z "$anthro" ] && [ -z "$oai" ] && [ -z "$goog" ]; then
+    if [ -z "$anthro" ] && [ -z "$oai" ] && [ -z "$goog" ] && [ -z "$deep" ]; then
         fail "At least one API provider is required"; exit 1
     fi
 
@@ -478,17 +513,6 @@ collect_api_keys_secure() {
     master_key=$(openssl rand -hex 32)
     local jwt_secret
     jwt_secret=$(openssl rand -hex 64)  # [Y2] JWT signing secret (used to issue short-lived tokens)
-    local secret_args=(
-        "--namespace=ocl-services"
-        "--from-literal=LITELLM_MASTER_KEY=${master_key}"
-        "--from-literal=JWT_SIGNING_SECRET=${jwt_secret}"
-        "--from-literal=AGENT_SIGNATURE_KEY=${jwt_secret}"
-    )
-    [ -n "$anthro" ] && secret_args+=("--from-literal=ANTHROPIC_API_KEY=${anthro}")
-    [ -n "$oai" ]    && secret_args+=("--from-literal=OPENAI_API_KEY=${oai}")
-    [ -n "$goog" ]   && secret_args+=("--from-literal=GOOGLE_API_KEY=${goog}")
-    [ -n "$deep" ]   && secret_args+=("--from-literal=DEEPSEEK_API_KEY=${deep}")
-
     # [M3] Pipe secret via YAML stdin to avoid keys appearing in /proc/pid/cmdline
     {
         echo "apiVersion: v1"
@@ -542,23 +566,24 @@ collect_telegram_config() {
     ask "Agent Network group ID [Enter to configure later]:"
     read -r TELEGRAM_GROUP_ID
 
-    # [JF6] Store Telegram tokens in BOTH namespaces:
+    # [JF6][M3] Store Telegram tokens in BOTH namespaces via YAML stdin
     # ocl-agents: gateway pods mount via envFrom
     # ocl-services: JWT rotator reads for Telegram failure alerts
-    kubectl create secret generic telegram-tokens \
-        --namespace=ocl-agents \
-        --from-literal=COMMANDER_BOT_TOKEN="${COMMANDER_BOT_TOKEN:-}" \
-        --from-literal=TELEGRAM_BOT_TOKEN="${COMMANDER_BOT_TOKEN:-}" \
-        --from-literal=TELEGRAM_USER_ID="${TELEGRAM_USER_ID:-}" \
-        --from-literal=TELEGRAM_GROUP_ID="${TELEGRAM_GROUP_ID:-}" \
-        --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1
-    kubectl create secret generic telegram-tokens \
-        --namespace=ocl-services \
-        --from-literal=COMMANDER_BOT_TOKEN="${COMMANDER_BOT_TOKEN:-}" \
-        --from-literal=TELEGRAM_BOT_TOKEN="${COMMANDER_BOT_TOKEN:-}" \
-        --from-literal=TELEGRAM_USER_ID="${TELEGRAM_USER_ID:-}" \
-        --from-literal=TELEGRAM_GROUP_ID="${TELEGRAM_GROUP_ID:-}" \
-        --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1
+    for ns in ocl-agents ocl-services; do
+        {
+            echo "apiVersion: v1"
+            echo "kind: Secret"
+            echo "metadata:"
+            echo "  name: telegram-tokens"
+            echo "  namespace: ${ns}"
+            echo "type: Opaque"
+            echo "stringData:"
+            echo "  COMMANDER_BOT_TOKEN: \"${COMMANDER_BOT_TOKEN:-}\""
+            echo "  TELEGRAM_BOT_TOKEN: \"${COMMANDER_BOT_TOKEN:-}\""
+            echo "  TELEGRAM_USER_ID: \"${TELEGRAM_USER_ID:-}\""
+            echo "  TELEGRAM_GROUP_ID: \"${TELEGRAM_GROUP_ID:-}\""
+        } | kubectl apply -f - >/dev/null 2>&1
+    done
 
     ok "Telegram configured (ocl-agents + ocl-services)"
 }
@@ -777,12 +802,15 @@ spec:
             initialDelaySeconds: 3
             periodSeconds: 5
         # Init sidecar: creates Streams and consumer groups on startup
+        # Runs init script then sleeps forever (avoids CrashLoopBackOff)
         - name: stream-init
           image: redis:7.4-alpine
-          command: ["/bin/sh", "/scripts/init-streams.sh"]
+          command: ["/bin/sh", "-c", "/scripts/init-streams.sh && sleep infinity"]
           volumeMounts:
             - { name: init-scripts, mountPath: /scripts }
-          restartPolicy: Never
+          resources:
+            requests: { memory: "32Mi", cpu: "10m" }
+            limits: { memory: "64Mi", cpu: "50m" }
       volumes:
         - name: data
           persistentVolumeClaim: { claimName: redis-pvc }
@@ -1007,7 +1035,12 @@ spec:
                 socket: { reconnectStrategy: (retries) => Math.min(retries * 100, 3000) }
               });
               redis.on("error", (err) => console.error("Redis error:", err.message));
-              redis.connect().catch(console.error);
+              // Connect to Redis before starting server (wrapped in async IIFE)
+              (async () => {
+              await redis.connect().catch(err => {
+                console.error("Fatal: Redis connection failed:", err.message);
+                process.exit(1);
+              });
 
               // [Y1] Deterministic Regex Blocklist — immune to prompt injection
               const REGEX_BLOCKLIST = [
@@ -1187,6 +1220,7 @@ spec:
                 }
               });
               server.listen(8080, () => console.log("Egress proxy on :8080 (regex+reputation)"));
+              })(); // end async IIFE
               PROXYJS
               node /app/proxy.js
           ports: [{ containerPort: 8080 }]
@@ -1242,10 +1276,12 @@ spec:
       ports:
         - { port: 53, protocol: UDP }
         - { port: 53, protocol: TCP }
-    # Allow pod-to-pod within ocl-agents namespace only
+    # Allow pod-to-pod within ocl-agents namespace (gateway port only)
     - to:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: ocl-agents }
+      ports:
+        - { port: 18789, protocol: TCP }
 NPEOF
     kubectl apply -f "${K8S_DIR}/agent-network-policy.yaml" >/dev/null 2>&1
     ok "NetworkPolicy: agents locked to Proxy/LiteLLM/Redis only"
@@ -1282,6 +1318,10 @@ spec:
                   MAX_RETRIES=3
                   ROTATION_SUCCESS=false
                   REDIS_POD=$(kubectl get pods -n ocl-services -l app=redis -o name | head -1)
+                  if [ -z "$REDIS_POD" ]; then
+                    echo "ERROR: No Redis pod found in ocl-services. Aborting rotation."
+                    exit 1
+                  fi
 
                   for ATTEMPT in $(seq 1 $MAX_RETRIES); do
                     echo "Rotation attempt ${ATTEMPT}/${MAX_RETRIES}..."
@@ -3145,7 +3185,7 @@ setup_nas_unattended() {
             }
         }
         # [HF1][L9] Delete-and-readd fstab entry for current NAS IP
-        grep -v '[[:space:]]/mnt/nas[[:space:]]' /etc/fstab > /tmp/fstab.ocl.tmp 2>/dev/null && sudo mv /tmp/fstab.ocl.tmp /etc/fstab || true
+        (umask 077; grep -v '[[:space:]]/mnt/nas[[:space:]]' /etc/fstab > /tmp/fstab.ocl.tmp) 2>/dev/null && sudo mv /tmp/fstab.ocl.tmp /etc/fstab || { rm -f /tmp/fstab.ocl.tmp 2>/dev/null; true; }
         echo "${NAS_IP}:${NAS_PATH} /mnt/nas nfs nfsvers=4.1,defaults,_netdev,noexec 0 0" \
             | sudo tee -a /etc/fstab >/dev/null
         ok "NAS mounted and fstab updated"
@@ -3185,22 +3225,28 @@ collect_api_keys_unattended() {
     HAS_GOOGLE=$(   [ -n "${goog:-}"   ] && echo "true" || echo "false" )
     HAS_DEEPSEEK=$( [ -n "${deep:-}"   ] && echo "true" || echo "false" )
 
-    local master_key=$(openssl rand -hex 32)
-    local jwt_secret=$(openssl rand -hex 64)
-    local secret_args=(
-        "--namespace=ocl-services"
-        "--from-literal=LITELLM_MASTER_KEY=${master_key}"
-        "--from-literal=JWT_SIGNING_SECRET=${jwt_secret}"
-        "--from-literal=AGENT_SIGNATURE_KEY=${jwt_secret}"
-    )
-    [ -n "${anthro:-}" ] && secret_args+=("--from-literal=ANTHROPIC_API_KEY=${anthro}")
-    [ -n "${oai:-}" ]    && secret_args+=("--from-literal=OPENAI_API_KEY=${oai}")
-    [ -n "${goog:-}" ]   && secret_args+=("--from-literal=GOOGLE_API_KEY=${goog}")
-    [ -n "${deep:-}" ]   && secret_args+=("--from-literal=DEEPSEEK_API_KEY=${deep}")
+    local master_key
+    master_key=$(openssl rand -hex 32)
+    local jwt_secret
+    jwt_secret=$(openssl rand -hex 64)
 
-    kubectl create secret generic llm-api-keys \
-        "${secret_args[@]}" \
-        --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1
+    # [M3] Pipe secret via YAML stdin to avoid keys appearing in /proc/pid/cmdline
+    {
+        echo "apiVersion: v1"
+        echo "kind: Secret"
+        echo "metadata:"
+        echo "  name: llm-api-keys"
+        echo "  namespace: ocl-services"
+        echo "type: Opaque"
+        echo "stringData:"
+        echo "  LITELLM_MASTER_KEY: \"${master_key}\""
+        echo "  JWT_SIGNING_SECRET: \"${jwt_secret}\""
+        echo "  AGENT_SIGNATURE_KEY: \"${jwt_secret}\""
+        [ -n "${anthro:-}" ] && echo "  ANTHROPIC_API_KEY: \"${anthro}\""
+        [ -n "${oai:-}" ]    && echo "  OPENAI_API_KEY: \"${oai}\""
+        [ -n "${goog:-}" ]   && echo "  GOOGLE_API_KEY: \"${goog}\""
+        [ -n "${deep:-}" ]   && echo "  DEEPSEEK_API_KEY: \"${deep}\""
+    } | kubectl apply -f - >/dev/null 2>&1
 
     # [JF1] Replicate to ocl-agents namespace
     kubectl get secret llm-api-keys -n ocl-services -o json 2>/dev/null \
@@ -3214,20 +3260,22 @@ collect_api_keys_unattended() {
 
 collect_telegram_unattended() {
     step 4 10 "Telegram (unattended)"
-    # [JF6] Create telegram-tokens in BOTH namespaces:
+    # [JF6][M3] Create telegram-tokens in BOTH namespaces via YAML stdin
     # ocl-agents (gateway envFrom) and ocl-services (JWT rotator Telegram alerts)
-    kubectl create secret generic telegram-tokens \
-        --namespace=ocl-agents \
-        --from-literal=TELEGRAM_BOT_TOKEN="${TELEGRAM_TOKEN}" \
-        --from-literal=TELEGRAM_GROUP_ID="${TELEGRAM_GROUP}" \
-        --from-literal=TELEGRAM_USER_ID="${TELEGRAM_USER_ID:-}" \
-        --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1
-    kubectl create secret generic telegram-tokens \
-        --namespace=ocl-services \
-        --from-literal=TELEGRAM_BOT_TOKEN="${TELEGRAM_TOKEN}" \
-        --from-literal=TELEGRAM_GROUP_ID="${TELEGRAM_GROUP}" \
-        --from-literal=TELEGRAM_USER_ID="${TELEGRAM_USER_ID:-}" \
-        --dry-run=client -o yaml 2>/dev/null | kubectl apply -f - >/dev/null 2>&1
+    for ns in ocl-agents ocl-services; do
+        {
+            echo "apiVersion: v1"
+            echo "kind: Secret"
+            echo "metadata:"
+            echo "  name: telegram-tokens"
+            echo "  namespace: ${ns}"
+            echo "type: Opaque"
+            echo "stringData:"
+            echo "  TELEGRAM_BOT_TOKEN: \"${TELEGRAM_TOKEN}\""
+            echo "  TELEGRAM_GROUP_ID: \"${TELEGRAM_GROUP}\""
+            echo "  TELEGRAM_USER_ID: \"${TELEGRAM_USER_ID:-}\""
+        } | kubectl apply -f - >/dev/null 2>&1
+    done
     ok "Telegram tokens injected (ocl-agents + ocl-services)"
 }
 
@@ -3510,6 +3558,16 @@ main() {
 
         echo -e "  ${GREEN}✓ .env validated${NC}"
 
+        # Pre-flight: verify sudo access won't block unattended mode
+        if ! sudo -n true 2>/dev/null; then
+            echo -e "${RED}Error: sudo requires a password but we're in unattended mode.${NC}"
+            echo "  Either:"
+            echo "    1. Run 'sudo -v' before launching this script (caches credentials)"
+            echo "    2. Add a NOPASSWD entry for this user in /etc/sudoers"
+            echo "    3. Run the script interactively (without --env)"
+            exit 1
+        fi
+
         # Variables already parsed into locals above (GF3 safe parsing)
         # Map AGENTS string to array
         IFS=',' read -ra SELECTED_AGENTS <<< "${AGENTS_STR:-}"
@@ -3518,6 +3576,9 @@ main() {
         for req in commander watchdog token-audit; do
             [[ " ${SELECTED_AGENTS[*]} " =~ " $req " ]] || SELECTED_AGENTS=("$req" "${SELECTED_AGENTS[@]}")
         done
+
+        # Pre-flight resource check
+        check_system_resources
 
         # Run full deployment non-interactively
         init_state
@@ -3564,6 +3625,7 @@ main() {
     if [ "${EXISTING_DEPLOY}" = false ]; then
         case ${MENU_CHOICE:-1} in
             1|2)
+                check_system_resources       # Pre-flight memory check
                 install_prerequisites        # Step 1
                 setup_nas                    # Step 2
                 # Ensure namespaces exist before secret creation
