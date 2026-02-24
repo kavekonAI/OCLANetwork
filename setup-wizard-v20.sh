@@ -2191,7 +2191,7 @@ generate_openclaw_config() {
   "channels": {
     "telegram": {
       "dmPolicy": "allowlist",
-      "allowFrom": ["${TELEGRAM_USER_ID:-}"]
+      "allowFrom": [${TELEGRAM_USER_ID:-0}]
     }
   }
 }
