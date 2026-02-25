@@ -622,6 +622,86 @@ setup_anthropic_oauth() {
     # Clear tokens from shell memory
     access_tok=""; refresh_tok=""; expires_at=""
     unset access_tok refresh_tok expires_at
+
+    # [NF8] Also set up OpenAI Codex CLI OAuth if Codex CLI is installed
+    setup_openai_codex_oauth
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# OpenAI Codex CLI OAuth setup — ChatGPT Plus subscription access for
+# gpt-5.3-codex models. Called from setup_anthropic_oauth (chained).
+# ─────────────────────────────────────────────────────────────────────
+setup_openai_codex_oauth() {
+    local codex_bin
+    codex_bin=$(command -v codex 2>/dev/null || true)
+    if [ -z "$codex_bin" ]; then
+        info "Codex CLI not installed — skipping OpenAI Codex OAuth setup"
+        info "To enable: npm install -g @openai/codex && codex login --device-auth"
+        return 0
+    fi
+
+    local auth_file="${HOME}/.codex/auth.json"
+    if [ ! -f "$auth_file" ]; then
+        info "Codex CLI installed but not logged in — skipping OpenAI Codex OAuth"
+        info "To enable: run 'codex login --device-auth' then re-run the wizard"
+        return 0
+    fi
+
+    local auth_mode
+    auth_mode=$(python3 -c "import json; d=json.load(open('${auth_file}')); print(d.get('auth_mode',''))" 2>/dev/null || true)
+    if [ "$auth_mode" != "chatgpt" ]; then
+        info "Codex CLI is using API key mode, not ChatGPT OAuth — skipping"
+        return 0
+    fi
+
+    local access_tok refresh_tok account_id expires_ms
+    access_tok=$(python3  -c "import json; d=json.load(open('${auth_file}')); print(d['tokens']['access_token'])"  2>/dev/null || true)
+    refresh_tok=$(python3 -c "import json; d=json.load(open('${auth_file}')); print(d['tokens']['refresh_token'])"  2>/dev/null || true)
+    account_id=$(python3  -c "import json; d=json.load(open('${auth_file}')); print(d['tokens']['account_id'])"     2>/dev/null || true)
+    expires_ms=$(python3  -c "
+import json, base64
+d=json.load(open('${auth_file}'))
+a=d['tokens']['access_token']
+p=a.split('.')[1]; p+='='*(4-len(p)%4)
+import json as j2; claims=j2.loads(base64.b64decode(p))
+print(claims['exp']*1000)
+" 2>/dev/null || true)
+
+    if [ -z "$access_tok" ]; then
+        warn "Codex auth.json found but could not parse access_token — skipping"
+        return 0
+    fi
+
+    ok "OpenAI Codex OAuth credentials detected (ChatGPT Plus)"
+
+    {
+        echo "apiVersion: v1"
+        echo "kind: Secret"
+        echo "metadata:"
+        echo "  name: openai-codex-oauth"
+        echo "  namespace: ocl-agents"
+        echo "type: Opaque"
+        echo "stringData:"
+        echo "  OPENAI_CODEX_ACCESS_TOKEN: \"${access_tok}\""
+        echo "  OPENAI_CODEX_REFRESH_TOKEN: \"${refresh_tok}\""
+        echo "  OPENAI_CODEX_ACCOUNT_ID: \"${account_id}\""
+        echo "  OPENAI_CODEX_EXPIRES: \"${expires_ms}\""
+    } | kubectl apply -f - >/dev/null 2>&1
+    ok "openai-codex-oauth secret created in ocl-agents"
+
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local refresh_script="${script_dir}/openai-codex-refresh.sh"
+    if [ -f "$refresh_script" ]; then
+        chmod 755 "$refresh_script"
+        local cron_entry="0 */6 * * * ${refresh_script} >> /var/log/openai-codex-refresh.log 2>&1"
+        ( crontab -l 2>/dev/null | grep -qF "$refresh_script" ) \
+            || ( crontab -l 2>/dev/null; echo "$cron_entry" ) | crontab -
+        ok "OpenAI Codex token refresh cron job installed (every 6h)"
+    fi
+
+    access_tok=""; refresh_tok=""; account_id=""; expires_ms=""
+    unset access_tok refresh_tok account_id expires_ms
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2355,7 +2435,9 @@ spec:
               # [NF6] Write auth-profiles.json for each agent from mounted secrets.
               # openclaw looks for auth-profiles.json per-agent; without it all model calls fail.
               # Anthropic: prefer OAuth (Max plan subscription) over API key when available.
-              # OpenAI and Google: openclaw only supports API key auth for these providers.
+              # OpenAI: prefer Codex CLI OAuth (ChatGPT Plus subscription) for gpt-5.3-codex models;
+              #         fall back to API key for all other OpenAI models.
+              # Google: API key only (no OAuth subscription path in openclaw).
               if [ -n "\${ANTHROPIC_OAUTH_TOKEN}" ]; then
                 echo "Using Anthropic OAuth (Max plan subscription)"
                 REFRESH_TOKEN="\${ANTHROPIC_REFRESH_TOKEN:-}"
@@ -2366,9 +2448,21 @@ spec:
                 ANTHROPIC_KEY=\$(cat /run/secrets/ANTHROPIC_API_KEY 2>/dev/null || true)
                 ANT_PROFILE="{\"type\":\"api_key\",\"provider\":\"anthropic\",\"key\":\"\${ANTHROPIC_KEY}\"}"
               fi
+              if [ -n "\${OPENAI_CODEX_ACCESS_TOKEN}" ]; then
+                echo "Using OpenAI Codex OAuth (ChatGPT Plus subscription)"
+                CODEX_EXPIRES="\${OPENAI_CODEX_EXPIRES:-0}"
+                CODEX_ACCOUNT="\${OPENAI_CODEX_ACCOUNT_ID:-}"
+                OAI_CODEX_PROFILE="{\"type\":\"oauth\",\"provider\":\"openai-codex\",\"access\":\"\${OPENAI_CODEX_ACCESS_TOKEN}\",\"refresh\":\"\${OPENAI_CODEX_REFRESH_TOKEN:-}\",\"expires\":\${CODEX_EXPIRES},\"accountId\":\"\${CODEX_ACCOUNT}\"}"
+              else
+                echo "No OpenAI Codex OAuth token — gpt-5.3-codex unavailable"
+                OAI_CODEX_PROFILE=""
+              fi
               AUTH_JSON="{\"version\":1,\"profiles\":{"
               AUTH_JSON="\${AUTH_JSON}\"anthropic\":\${ANT_PROFILE},"
               AUTH_JSON="\${AUTH_JSON}\"openai\":{\"type\":\"api_key\",\"provider\":\"openai\",\"key\":\"\${OPENAI_KEY}\"},"
+              if [ -n "\${OAI_CODEX_PROFILE}" ]; then
+                AUTH_JSON="\${AUTH_JSON}\"openai-codex\":\${OAI_CODEX_PROFILE},"
+              fi
               AUTH_JSON="\${AUTH_JSON}\"google\":{\"type\":\"api_key\",\"provider\":\"google\",\"key\":\"\${GOOGLE_KEY}\"}"
               AUTH_JSON="\${AUTH_JSON}}}"
               for AGENT_ID in main commander watchdog token-audit content-creator researcher linkedin-mgr librarian; do
@@ -2376,7 +2470,7 @@ spec:
                 printf '%s' "\${AUTH_JSON}" > /home/node/.openclaw/agents/\${AGENT_ID}/agent/auth-profiles.json
                 chmod 600 /home/node/.openclaw/agents/\${AGENT_ID}/agent/auth-profiles.json
               done
-              echo "Auth profiles written for: anthropic, openai, google"
+              echo "Auth profiles written for: anthropic, openai, openai-codex, google"
               echo "OpenClaw version: \$(node /host-openclaw/openclaw.mjs --version 2>/dev/null || echo \${OCL_PINNED_VERSION})"
               exec node /host-openclaw/openclaw.mjs gateway --port 18789 --verbose
           ports: [{ containerPort: 18789 }]
@@ -2398,6 +2492,20 @@ spec:
             - name: ANTHROPIC_OAUTH_EXPIRES
               valueFrom:
                 secretKeyRef: { name: anthropic-oauth, key: ANTHROPIC_OAUTH_EXPIRES, optional: true }
+            # OpenAI Codex CLI OAuth — ChatGPT Plus subscription for gpt-5.3-codex models.
+            # Populated by openai-codex-refresh.sh cron job every 6h from ~/.codex/auth.json
+            - name: OPENAI_CODEX_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef: { name: openai-codex-oauth, key: OPENAI_CODEX_ACCESS_TOKEN, optional: true }
+            - name: OPENAI_CODEX_REFRESH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: openai-codex-oauth, key: OPENAI_CODEX_REFRESH_TOKEN, optional: true }
+            - name: OPENAI_CODEX_ACCOUNT_ID
+              valueFrom:
+                secretKeyRef: { name: openai-codex-oauth, key: OPENAI_CODEX_ACCOUNT_ID, optional: true }
+            - name: OPENAI_CODEX_EXPIRES
+              valueFrom:
+                secretKeyRef: { name: openai-codex-oauth, key: OPENAI_CODEX_EXPIRES, optional: true }
             # [IF2] Route all LLM calls through LiteLLM proxy when optimizer is active
             - name: LITELLM_MASTER_KEY
               valueFrom:
