@@ -1761,7 +1761,7 @@ LCEOF
   # GOOGLE (fallback)
   - model_name: gemini-flash
     litellm_params:
-      model: gemini/gemini-2.5-flash
+      model: gemini/gemini-3.1-pro-preview
       api_key: os.environ/GOOGLE_API_KEY
 LCEOF
 
