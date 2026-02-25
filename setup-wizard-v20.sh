@@ -1945,16 +1945,15 @@ context before continuing (e.g. "Picking up from our discussion about X...").
 
 PROVIDER_BADGE_PROTOCOL='
 ## ═══ PROVIDER IDENTITY ═══
-Your active model: **<YOUR_MODEL_DISPLAY>** (`<YOUR_MODEL_STR>`)
+Your active model: <YOUR_MODEL_EMOJI> **<YOUR_MODEL_SHORT>** (`<YOUR_MODEL_STR>`)
 
-### Telegram Signature (REQUIRED)
-End EVERY Telegram message you send with this footer (Telegram italic markdown):
+Provider logos: 🟠 Anthropic · 🟢 OpenAI · ✨ Gemini · 🦙 Ollama (local)
 
-`_— <YOUR_ID> · <YOUR_MODEL_DISPLAY>_`
+### Telegram Signature (MANDATORY — last line of EVERY message, no exceptions)
+`_<YOUR_MODEL_EMOJI> <YOUR_MODEL_SHORT>_`
 
-If responding during a fallback (your prompt began with "Continue where you left off"):
-
-`_— <YOUR_ID> · <YOUR_MODEL_DISPLAY> ⚡ fallback_`
+On fallback (prompt began with "Continue where you left off"):
+`_<YOUR_MODEL_EMOJI> <YOUR_MODEL_SHORT> ⚡_`
 '
 
 # Maps agent ID to its primary model string
@@ -1995,6 +1994,33 @@ get_model_display_name() {
         openai/gpt-4o-mini)             echo "GPT-4o Mini" ;;
         ollama/phi4-mini)               echo "Phi-4 Mini (local)" ;;
         *)                              echo "$1" ;;
+    esac
+}
+
+# Maps model string to short badge name (Telegram signature)
+get_model_short_name() {
+    case $1 in
+        anthropic/claude-opus-4-6)      echo "Opus 4.6" ;;
+        anthropic/claude-sonnet-4-5)    echo "Sonnet 4.5" ;;
+        anthropic/claude-haiku-4-5*)    echo "Haiku 4.5" ;;
+        openai-codex/gpt-5.3-codex)     echo "Codex 5.3" ;;
+        gemini/gemini-3.1-pro-preview)  echo "Gemini 3.1" ;;
+        gemini/gemini-2.5-flash)        echo "Gemini 2.5" ;;
+        openai/gpt-4o)                  echo "GPT-4o" ;;
+        openai/gpt-4o-mini)             echo "GPT-4o Mini" ;;
+        ollama/phi4-mini)               echo "Phi-4" ;;
+        *)                              echo "$1" ;;
+    esac
+}
+
+# Maps model string to provider emoji logo
+get_model_emoji() {
+    case $1 in
+        anthropic/*)   echo "🟠" ;;
+        openai-codex/* | openai/*) echo "🟢" ;;
+        gemini/*)      echo "✨" ;;
+        ollama/*)      echo "🦙" ;;
+        *)             echo "🤖" ;;
     esac
 }
 
@@ -2343,10 +2369,12 @@ SOUL
 
     # Append Provider Badge Protocol — Telegram signature with active model identity
     local primary_model; primary_model=$(get_agent_primary_model "$id")
-    local model_display; model_display=$(get_model_display_name "$primary_model")
+    local model_short;   model_short=$(get_model_short_name "$primary_model")
+    local model_emoji;   model_emoji=$(get_model_emoji "$primary_model")
     local badge_block="${PROVIDER_BADGE_PROTOCOL//<YOUR_ID>/${id}}"
     badge_block="${badge_block//<YOUR_MODEL_STR>/${primary_model}}"
-    badge_block="${badge_block//<YOUR_MODEL_DISPLAY>/${model_display}}"
+    badge_block="${badge_block//<YOUR_MODEL_SHORT>/${model_short}}"
+    badge_block="${badge_block//<YOUR_MODEL_EMOJI>/${model_emoji}}"
     printf '\n%s\n' "$badge_block" >> "$soul_file"
 }
 
@@ -2553,6 +2581,12 @@ spec:
               mkdir -p /home/node/.openclaw
               cp /config/openclaw.json /home/node/.openclaw/openclaw.json
               cp /souls/*.md /home/node/.openclaw/ 2>/dev/null || true
+              # Copy souls to workspace dirs — openclaw reads workspace-{agent}/SOUL.md not top-level
+              for SOUL_FILE in /souls/*.md; do
+                AGENT_ID=\$(basename "\$SOUL_FILE" .md)
+                mkdir -p "/home/node/.openclaw/workspace-\${AGENT_ID}"
+                cp "\$SOUL_FILE" "/home/node/.openclaw/workspace-\${AGENT_ID}/SOUL.md"
+              done
               # [NF6] Write auth-profiles.json for each agent from mounted secrets.
               # openclaw looks for auth-profiles.json per-agent; without it all model calls fail.
               # Anthropic: prefer OAuth (Max plan subscription) over API key when available.
