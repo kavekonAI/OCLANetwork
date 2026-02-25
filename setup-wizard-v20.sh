@@ -2317,7 +2317,7 @@ generate_openclaw_config() {
         local fallbacks_str
         case $model in
             codex-plus)    fallbacks_str='"gemini/gemini-3.1-pro-preview","anthropic/claude-opus-4-6"' ;;
-            claude-opus)   fallbacks_str='"openai-codex/gpt-5.3-codex"' ;;
+            claude-opus)   fallbacks_str='"gemini/gemini-3.1-pro-preview","openai-codex/gpt-5.3-codex"' ;;
             *)             fallbacks_str='"openai-codex/gpt-5.3-codex","anthropic/claude-opus-4-6"' ;;
         esac
 
