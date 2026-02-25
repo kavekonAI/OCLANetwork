@@ -2282,16 +2282,17 @@ generate_openclaw_config() {
                 network="bridge" ;;
             quant-trader)       model="claude-opus";   network="none"   ;;
             market-data-fetcher) model="local-fast";   network="bridge" ;;
-            researcher)         model="claude-opus";   network="bridge" ;;
+            researcher)         model="gemini-research"; network="bridge" ;;
             *)                  model="claude-sonnet"; network="bridge" ;;
         esac
 
         # Map friendly name to actual model string
         local model_str
         case $model in
-            claude-opus)   model_str="anthropic/claude-opus-4-6" ;;
-            claude-sonnet) model_str="anthropic/claude-sonnet-4-5" ;;
-            codex-plus)    model_str="openai-codex/gpt-5.3-codex" ;;
+            claude-opus)     model_str="anthropic/claude-opus-4-6" ;;
+            claude-sonnet)   model_str="anthropic/claude-sonnet-4-5" ;;
+            codex-plus)      model_str="openai-codex/gpt-5.3-codex" ;;
+            gemini-research) model_str="gemini/gemini-3.1-pro-preview" ;;
             local-fast)
                 if [ "${OPTIMIZER_ACTIVE:-true}" = "true" ]; then
                     model_str="ollama/phi4-mini"
@@ -2316,9 +2317,10 @@ generate_openclaw_config() {
         # Avoid repeating the primary in fallbacks (e.g. opus primary → no opus fallback).
         local fallbacks_str
         case $model in
-            codex-plus)    fallbacks_str='"gemini/gemini-3.1-pro-preview","anthropic/claude-opus-4-6"' ;;
-            claude-opus)   fallbacks_str='"gemini/gemini-3.1-pro-preview","openai-codex/gpt-5.3-codex"' ;;
-            *)             fallbacks_str='"openai-codex/gpt-5.3-codex","anthropic/claude-opus-4-6"' ;;
+            codex-plus)      fallbacks_str='"gemini/gemini-3.1-pro-preview","anthropic/claude-opus-4-6"' ;;
+            claude-opus)     fallbacks_str='"gemini/gemini-3.1-pro-preview","openai-codex/gpt-5.3-codex"' ;;
+            gemini-research) fallbacks_str='"anthropic/claude-opus-4-6","openai-codex/gpt-5.3-codex"' ;;
+            *)               fallbacks_str='"openai-codex/gpt-5.3-codex","anthropic/claude-opus-4-6"' ;;
         esac
 
         [ "$first" = true ] && first=false || agents_json+=","
