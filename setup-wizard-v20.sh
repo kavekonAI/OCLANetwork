@@ -2151,7 +2151,9 @@ generate_openclaw_config() {
 
         [ "$first" = true ] && first=false || agents_json+=","
         # [L11] Use printf for cleaner JSON concatenation (no stray blank lines)
-        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": ["openai/gpt-4o"]\n      },\n      "sandbox": {\n        "mode": "all",\n        "scope": "agent",\n        "docker": { "network": "%s" }\n      }\n    }' "$id" "$id" "$id" "$model_str" "$network")
+        # [NF7] sandbox mode:off — agents run inside k3s pod; Docker not available in-container.
+        # Security is provided by NetworkPolicy + egress proxy rather than Docker sandbox.
+        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": ["openai/gpt-4o"]\n      },\n      "sandbox": { "mode": "off" }\n    }' "$id" "$id" "$id" "$model_str")
     done
     agents_json+=$'\n  ]'
 
@@ -2177,11 +2179,7 @@ generate_openclaw_config() {
   },
   "agents": {
     "defaults": {
-      "sandbox": {
-        "mode": "all",
-        "scope": "agent",
-        "workspaceAccess": "rw"
-      }
+      "sandbox": { "mode": "off" }
     },
     "list": ${agents_json}
   },
