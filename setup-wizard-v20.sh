@@ -1300,7 +1300,8 @@ EGRESSEOF
     kubectl exec -n ocl-services deploy/redis -- redis-cli SADD ocl:egress:whitelist \
         "api.openai.com" "api.anthropic.com" "arxiv.org" "api.semanticscholar.org" \
         "api.github.com" "huggingface.co" "finance.yahoo.com" "api.alphavantage.co" \
-        "fred.stlouisfed.org" "registry.npmjs.org" "api.telegram.org" >/dev/null 2>&1 || true
+        "fred.stlouisfed.org" "registry.npmjs.org" "api.telegram.org" \
+        "generativelanguage.googleapis.com" "aiplatform.googleapis.com" "oauth2.googleapis.com" >/dev/null 2>&1 || true
     echo ""; ok "Egress Proxy + regex blocklist + reputation whitelist"
 
     # ── NetworkPolicy — Agent Egress Lockdown [Gap Y3] ──
