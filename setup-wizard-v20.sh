@@ -559,6 +559,69 @@ collect_api_keys_secure() {
     anthro=""; oai=""; goog=""; deep=""; master_key=""; jwt_secret=""
     unset anthro oai goog deep master_key jwt_secret
     ok "Keys cleared from shell memory"
+
+    # [NF7] Auto-detect Claude Max OAuth credentials and create anthropic-oauth secret.
+    # openclaw prefers ANTHROPIC_OAUTH_TOKEN over API key when set — uses Max subscription
+    # instead of pay-per-token API credits. Also installs a 6-hourly cron job to refresh.
+    # This is optional — wizard continues normally if credentials not found.
+    setup_anthropic_oauth
+}
+
+# ─────────────────────────────────────────────────────────────────────
+# Claude Max OAuth setup (called from collect_api_keys_secure and
+# collect_api_keys_unattended)
+# ─────────────────────────────────────────────────────────────────────
+setup_anthropic_oauth() {
+    local creds_file="${HOME}/.claude/.credentials.json"
+    if [ ! -f "$creds_file" ]; then
+        info "No Claude Max credentials found at ${creds_file} — using Anthropic API key only"
+        return 0
+    fi
+
+    local access_tok refresh_tok expires_at sub_type
+    access_tok=$(python3  -c "import json; d=json.load(open('${creds_file}')); print(d['claudeAiOauth']['accessToken'])"  2>/dev/null || true)
+    refresh_tok=$(python3 -c "import json; d=json.load(open('${creds_file}')); print(d['claudeAiOauth']['refreshToken'])"  2>/dev/null || true)
+    expires_at=$(python3  -c "import json; d=json.load(open('${creds_file}')); print(d['claudeAiOauth']['expiresAt'])"      2>/dev/null || true)
+    sub_type=$(python3    -c "import json; d=json.load(open('${creds_file}')); print(d['claudeAiOauth'].get('subscriptionType','unknown'))" 2>/dev/null || true)
+
+    if [ -z "$access_tok" ]; then
+        warn "Claude credentials found but could not parse accessToken — skipping OAuth setup"
+        return 0
+    fi
+
+    ok "Claude Max credentials detected (subscription: ${sub_type})"
+
+    # Create/update anthropic-oauth secret in ocl-agents namespace via YAML stdin
+    {
+        echo "apiVersion: v1"
+        echo "kind: Secret"
+        echo "metadata:"
+        echo "  name: anthropic-oauth"
+        echo "  namespace: ocl-agents"
+        echo "type: Opaque"
+        echo "stringData:"
+        echo "  ANTHROPIC_OAUTH_TOKEN: \"${access_tok}\""
+        echo "  ANTHROPIC_REFRESH_TOKEN: \"${refresh_tok}\""
+        echo "  ANTHROPIC_OAUTH_EXPIRES: \"${expires_at}\""
+    } | kubectl apply -f - >/dev/null 2>&1
+    ok "anthropic-oauth secret created in ocl-agents"
+
+    # Install oauth-refresh.sh cron job (runs every 6h to keep token current)
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local refresh_script="${script_dir}/oauth-refresh.sh"
+    if [ -f "$refresh_script" ]; then
+        chmod 755 "$refresh_script"
+        local cron_entry="0 */6 * * * ${refresh_script} >> /var/log/oauth-refresh.log 2>&1"
+        # Add only if not already present
+        ( crontab -l 2>/dev/null | grep -qF "$refresh_script" ) \
+            || ( crontab -l 2>/dev/null; echo "$cron_entry" ) | crontab -
+        ok "OAuth token refresh cron job installed (every 6h)"
+    fi
+
+    # Clear tokens from shell memory
+    access_tok=""; refresh_tok=""; expires_at=""
+    unset access_tok refresh_tok expires_at
 }
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2284,7 +2347,6 @@ spec:
             - |
               # [NF5] openclaw is pre-installed on the host and mounted via hostPath.
               # In-container npm install is not used: node:slim lacks git required by openclaw deps.
-              ANTHROPIC_KEY=\$(cat /run/secrets/ANTHROPIC_API_KEY 2>/dev/null || true)
               OPENAI_KEY=\$(cat /run/secrets/OPENAI_API_KEY 2>/dev/null || true)
               GOOGLE_KEY=\$(cat /run/secrets/GOOGLE_API_KEY 2>/dev/null || true)
               mkdir -p /home/node/.openclaw
@@ -2292,8 +2354,20 @@ spec:
               cp /souls/*.md /home/node/.openclaw/ 2>/dev/null || true
               # [NF6] Write auth-profiles.json for each agent from mounted secrets.
               # openclaw looks for auth-profiles.json per-agent; without it all model calls fail.
+              # Anthropic: prefer OAuth (Max plan subscription) over API key when available.
+              # OpenAI and Google: openclaw only supports API key auth for these providers.
+              if [ -n "\${ANTHROPIC_OAUTH_TOKEN}" ]; then
+                echo "Using Anthropic OAuth (Max plan subscription)"
+                REFRESH_TOKEN="\${ANTHROPIC_REFRESH_TOKEN:-}"
+                EXPIRES="\${ANTHROPIC_OAUTH_EXPIRES:-0}"
+                ANT_PROFILE="{\"type\":\"oauth\",\"provider\":\"anthropic\",\"access\":\"\${ANTHROPIC_OAUTH_TOKEN}\",\"refresh\":\"\${REFRESH_TOKEN}\",\"expires\":\${EXPIRES}}"
+              else
+                echo "Using Anthropic API key (no OAuth token)"
+                ANTHROPIC_KEY=\$(cat /run/secrets/ANTHROPIC_API_KEY 2>/dev/null || true)
+                ANT_PROFILE="{\"type\":\"api_key\",\"provider\":\"anthropic\",\"key\":\"\${ANTHROPIC_KEY}\"}"
+              fi
               AUTH_JSON="{\"version\":1,\"profiles\":{"
-              AUTH_JSON="\${AUTH_JSON}\"anthropic\":{\"type\":\"api_key\",\"provider\":\"anthropic\",\"key\":\"\${ANTHROPIC_KEY}\"},"
+              AUTH_JSON="\${AUTH_JSON}\"anthropic\":\${ANT_PROFILE},"
               AUTH_JSON="\${AUTH_JSON}\"openai\":{\"type\":\"api_key\",\"provider\":\"openai\",\"key\":\"\${OPENAI_KEY}\"},"
               AUTH_JSON="\${AUTH_JSON}\"google\":{\"type\":\"api_key\",\"provider\":\"google\",\"key\":\"\${GOOGLE_KEY}\"}"
               AUTH_JSON="\${AUTH_JSON}}}"
@@ -2313,6 +2387,17 @@ spec:
               value: "/run/secrets/AGENT_SIGNATURE_KEY"
             - name: OCL_PINNED_VERSION
               value: "${ocl_ver}"
+            # Anthropic Max plan OAuth token — preferred over API key when set.
+            # Populated by oauth-refresh.sh cron job every 6h from ~/.claude/.credentials.json
+            - name: ANTHROPIC_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: anthropic-oauth, key: ANTHROPIC_OAUTH_TOKEN, optional: true }
+            - name: ANTHROPIC_REFRESH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: anthropic-oauth, key: ANTHROPIC_REFRESH_TOKEN, optional: true }
+            - name: ANTHROPIC_OAUTH_EXPIRES
+              valueFrom:
+                secretKeyRef: { name: anthropic-oauth, key: ANTHROPIC_OAUTH_EXPIRES, optional: true }
             # [IF2] Route all LLM calls through LiteLLM proxy when optimizer is active
             - name: LITELLM_MASTER_KEY
               valueFrom:
@@ -3342,6 +3427,9 @@ collect_api_keys_unattended() {
     anthro=""; oai=""; goog=""; deep=""; master_key=""; jwt_secret=""
     unset anthro oai goog deep master_key jwt_secret
     ok "Keys injected into K8s Secret (ocl-services + ocl-agents)"
+
+    # [NF7] Auto-detect Claude Max OAuth credentials (same as interactive path)
+    setup_anthropic_oauth
 }
 
 collect_telegram_unattended() {
