@@ -402,7 +402,7 @@ agent_model_configs:
 
   token-audit:
     primary: openai-codex/gpt-5.3-codex  # ChatGPT Plus OAuth — zero API cost when available
-    fallbacks: [gemini/gemini-2.0-flash, openai/gpt-4o]
+    fallbacks: [gemini/gemini-3.1-pro-preview, openai/gpt-4o]
     max_budget: 0                         # $0 when using ChatGPT Plus OAuth
     optimize_prompts: false
     # Falls back to local-fast if Codex CLI OAuth not configured

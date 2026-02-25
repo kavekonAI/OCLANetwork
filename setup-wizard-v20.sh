@@ -2299,7 +2299,7 @@ generate_openclaw_config() {
                     # [EF3] Direct Mode: smart fallback chain based on available keys
                     # Priority: Google (cheapest) → OpenAI → Anthropic (most expensive)
                     if [ "${HAS_GOOGLE:-false}" = "true" ]; then
-                        model_str="gemini/gemini-2.0-flash"
+                        model_str="gemini/gemini-3.1-pro-preview"
                     elif [ "${HAS_OPENAI:-false}" = "true" ]; then
                         model_str="openai/gpt-4o-mini"
                     elif [ "${HAS_ANTHROPIC:-false}" = "true" ]; then
@@ -2316,7 +2316,7 @@ generate_openclaw_config() {
         # fallbacks should avoid openai-codex (same quota) and prefer cheaper alternatives.
         local fallbacks_str
         case $model in
-            codex-plus)    fallbacks_str='"gemini/gemini-2.0-flash","openai/gpt-4o"' ;;
+            codex-plus)    fallbacks_str='"gemini/gemini-3.1-pro-preview","openai/gpt-4o"' ;;
             claude-opus)   fallbacks_str='"anthropic/claude-sonnet-4-5","openai/gpt-4o"' ;;
             *)             fallbacks_str='"openai/gpt-4o"' ;;
         esac

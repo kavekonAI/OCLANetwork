@@ -444,7 +444,7 @@ If you have a **ChatGPT Plus subscription**, the wizard can authenticate via the
 
 **What this enables:**
 - `token-audit` agent uses `gpt-5.3-codex` via ChatGPT Plus — zero API cost
-- Falls back to `gemini/gemini-2.0-flash` → `openai/gpt-4o` if token expires
+- Falls back to `gemini/gemini-3.1-pro-preview` → `openai/gpt-4o` if token expires
 - Inference routes through `chatgpt.com/backend-api` (NOT `api.openai.com`)
 
 ### Key Storage (BEFORE Running Wizard)
