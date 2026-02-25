@@ -1862,6 +1862,11 @@ RECOVERY_PROTOCOL='
 6. Report status:
    `HSET ocl:agent-status:<YOUR_ID> status running last_seen <ISO-8601>`
 
+7. Restore conversation memory (last 10 exchanges):
+   `XREVRANGE ocl:conversation:<YOUR_ID>:memory + - COUNT 20`
+   If entries exist → read them and include a brief "Picking up from earlier:" note in
+   your first response. This restores continuity across pod restarts and provider switches.
+
 ### During Multi-Step Work
 After EACH step, checkpoint your state:
 ```
@@ -1918,6 +1923,80 @@ SET ocl:heartbeat:<YOUR_ID> alive EX 120
      For each result, check: `HGET ocl:learnings:fixed:<id> validation`
      ONLY use fixes where validation = "approved" (ignore pending/rejected)
 '
+
+CONVERSATION_MEMORY_PROTOCOL='
+## ═══ CONVERSATION MEMORY PROTOCOL ═══
+## Preserves context across pod restarts and provider switches
+
+### After Every Telegram Response
+Save a 1-2 sentence summary to keep context alive across restarts:
+```
+XADD ocl:conversation:<YOUR_ID>:memory * role user msg "<1-sentence summary of request>" ts "<ISO-8601>"
+XADD ocl:conversation:<YOUR_ID>:memory * role assistant msg "<1-2 sentence summary of your response>" ts "<ISO-8601>"
+XTRIM ocl:conversation:<YOUR_ID>:memory MAXLEN ~ 50
+```
+Keep summaries concise (≤2 sentences). Never store raw API keys or user credentials.
+
+### On Provider Fallback
+When your prompt starts with "Continue where you left off" — you have switched to a
+fallback provider. Immediately load conversation memory and briefly acknowledge the
+context before continuing (e.g. "Picking up from our discussion about X...").
+'
+
+PROVIDER_BADGE_PROTOCOL='
+## ═══ PROVIDER IDENTITY ═══
+Your active model: **<YOUR_MODEL_DISPLAY>** (`<YOUR_MODEL_STR>`)
+
+### Telegram Signature (REQUIRED)
+End EVERY Telegram message you send with this footer (Telegram italic markdown):
+
+`_— <YOUR_ID> · <YOUR_MODEL_DISPLAY>_`
+
+If responding during a fallback (your prompt began with "Continue where you left off"):
+
+`_— <YOUR_ID> · <YOUR_MODEL_DISPLAY> ⚡ fallback_`
+'
+
+# Maps agent ID to its primary model string
+get_agent_primary_model() {
+    local id=$1
+    case $id in
+        commander)           echo "anthropic/claude-opus-4-6" ;;
+        quant-trader)        echo "anthropic/claude-opus-4-6" ;;
+        researcher)          echo "gemini/gemini-3.1-pro-preview" ;;
+        token-audit)
+            [ "${HAS_CODEX_OAUTH:-false}" = "true" ] \
+                && echo "openai-codex/gpt-5.3-codex" \
+                || echo "ollama/phi4-mini" ;;
+        watchdog|market-data-fetcher)
+            if [ "${OPTIMIZER_ACTIVE:-true}" = "true" ]; then
+                echo "ollama/phi4-mini"
+            elif [ "${HAS_GOOGLE:-false}" = "true" ]; then
+                echo "gemini/gemini-3.1-pro-preview"
+            elif [ "${HAS_OPENAI:-false}" = "true" ]; then
+                echo "openai/gpt-4o-mini"
+            else
+                echo "anthropic/claude-haiku-4-5"
+            fi ;;
+        *)                   echo "anthropic/claude-sonnet-4-5" ;;
+    esac
+}
+
+# Maps model string to human-friendly display name
+get_model_display_name() {
+    case $1 in
+        anthropic/claude-opus-4-6)      echo "Claude Opus 4.6" ;;
+        anthropic/claude-sonnet-4-5)    echo "Claude Sonnet 4.5" ;;
+        anthropic/claude-haiku-4-5*)    echo "Claude Haiku 4.5" ;;
+        openai-codex/gpt-5.3-codex)     echo "GPT-5.3 Codex" ;;
+        gemini/gemini-3.1-pro-preview)  echo "Gemini 3.1 Pro" ;;
+        gemini/gemini-2.5-flash)        echo "Gemini 2.5 Flash" ;;
+        openai/gpt-4o)                  echo "GPT-4o" ;;
+        openai/gpt-4o-mini)             echo "GPT-4o Mini" ;;
+        ollama/phi4-mini)               echo "Phi-4 Mini (local)" ;;
+        *)                              echo "$1" ;;
+    esac
+}
 
 generate_soul() {
     local id=$1
@@ -2257,6 +2336,18 @@ SOUL
     # Append Universal Recovery Protocol to EVERY soul [Gap E]
     local recovery_block="${RECOVERY_PROTOCOL//<YOUR_ID>/${id}}"
     printf '\n%s\n' "$recovery_block" >> "$soul_file"
+
+    # Append Conversation Memory Protocol — cross-session and cross-provider continuity
+    local memory_block="${CONVERSATION_MEMORY_PROTOCOL//<YOUR_ID>/${id}}"
+    printf '\n%s\n' "$memory_block" >> "$soul_file"
+
+    # Append Provider Badge Protocol — Telegram signature with active model identity
+    local primary_model; primary_model=$(get_agent_primary_model "$id")
+    local model_display; model_display=$(get_model_display_name "$primary_model")
+    local badge_block="${PROVIDER_BADGE_PROTOCOL//<YOUR_ID>/${id}}"
+    badge_block="${badge_block//<YOUR_MODEL_STR>/${primary_model}}"
+    badge_block="${badge_block//<YOUR_MODEL_DISPLAY>/${model_display}}"
+    printf '\n%s\n' "$badge_block" >> "$soul_file"
 }
 
 # ─── OPENCLAW CONFIG ───────────────────────────────────────────────────
