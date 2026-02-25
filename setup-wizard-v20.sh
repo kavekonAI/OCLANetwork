@@ -372,7 +372,13 @@ install_prerequisites() {
     fi
     echo ""; ok "Node.js $(node -v 2>/dev/null)"
 
-    # 6) OpenClaw — with version pinning
+    # 6) OpenAI Codex CLI — optional, enables ChatGPT Plus OAuth for gpt-5.3-codex
+    # Installed silently; login is handled later in setup_openai_codex_oauth()
+    if ! command -v codex &>/dev/null; then
+        npm install -g @openai/codex >/dev/null 2>&1 || true
+    fi
+
+    # 7) OpenClaw — with version pinning
     progress_bar 6 $T "OpenClaw"
     # Check if a version is already pinned
     OCL_VERSION=$(read_state "openclaw" | tr -d '"')
@@ -673,6 +679,9 @@ print(claims['exp']*1000)
     fi
 
     ok "OpenAI Codex OAuth credentials detected (ChatGPT Plus)"
+
+    # [NF8] Set flag so generate_openclaw_config() assigns gpt-5.3-codex to token-audit
+    HAS_CODEX_OAUTH=true
 
     {
         echo "apiVersion: v1"
@@ -2262,7 +2271,15 @@ generate_openclaw_config() {
         case $id in
             commander)          model="claude-opus";   network="bridge" ;;
             watchdog)           model="local-fast";    network="bridge" ;;
-            token-audit)        model="local-fast";    network="bridge" ;;
+            # [NF8] token-audit: prefer openai-codex/gpt-5.3-codex (ChatGPT Plus subscription,
+            # zero API cost) when Codex CLI OAuth is available; fall back to local-fast otherwise.
+            token-audit)
+                if [ "${HAS_CODEX_OAUTH:-false}" = "true" ]; then
+                    model="codex-plus"
+                else
+                    model="local-fast"
+                fi
+                network="bridge" ;;
             quant-trader)       model="claude-opus";   network="none"   ;;
             market-data-fetcher) model="local-fast";   network="bridge" ;;
             researcher)         model="claude-opus";   network="bridge" ;;
@@ -2272,8 +2289,9 @@ generate_openclaw_config() {
         # Map friendly name to actual model string
         local model_str
         case $model in
-            claude-opus)  model_str="anthropic/claude-opus-4-6" ;;
+            claude-opus)   model_str="anthropic/claude-opus-4-6" ;;
             claude-sonnet) model_str="anthropic/claude-sonnet-4-5" ;;
+            codex-plus)    model_str="openai-codex/gpt-5.3-codex" ;;
             local-fast)
                 if [ "${OPTIMIZER_ACTIVE:-true}" = "true" ]; then
                     model_str="ollama/phi4-mini"
@@ -2294,11 +2312,20 @@ generate_openclaw_config() {
                 ;;
         esac
 
+        # [NF9] Per-model fallback chain: codex-plus routes via ChatGPT Plus OAuth so its
+        # fallbacks should avoid openai-codex (same quota) and prefer cheaper alternatives.
+        local fallbacks_str
+        case $model in
+            codex-plus)    fallbacks_str='"gemini/gemini-2.0-flash","openai/gpt-4o"' ;;
+            claude-opus)   fallbacks_str='"anthropic/claude-sonnet-4-5","openai/gpt-4o"' ;;
+            *)             fallbacks_str='"openai/gpt-4o"' ;;
+        esac
+
         [ "$first" = true ] && first=false || agents_json+=","
         # [L11] Use printf for cleaner JSON concatenation (no stray blank lines)
         # [NF7] sandbox mode:off — agents run inside k3s pod; Docker not available in-container.
         # Security is provided by NetworkPolicy + egress proxy rather than Docker sandbox.
-        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": ["openai/gpt-4o"]\n      },\n      "sandbox": { "mode": "off" }\n    }' "$id" "$id" "$id" "$model_str")
+        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": [%s]\n      },\n      "sandbox": { "mode": "off" }\n    }' "$id" "$id" "$id" "$model_str" "$fallbacks_str")
     done
     agents_json+=$'\n  ]'
 

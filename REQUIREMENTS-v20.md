@@ -202,7 +202,21 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-09.2 | Alert via Telegram if any agent exceeds 50% of its daily budget in <4 hours | MUST |
 | REQ-09.3 | Auto-pause agent if it exceeds its monthly budget cap | MUST |
 | REQ-09.4 | Dashboard shows per-agent cost breakdown updated every 30 minutes | MUST |
-| REQ-09.5 | Token Audit Agent runs on local-fast model (~$3/mo overhead) | MUST |
+| REQ-09.5 | Token Audit Agent runs on `openai-codex/gpt-5.3-codex` (ChatGPT Plus, zero API cost) when Codex CLI OAuth is configured; falls back to `local-fast` otherwise | MUST |
+
+### REQ-17: Subscription-based OAuth Authentication
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-17.1 | Wizard auto-detects Anthropic Max subscription OAuth token (`~/.claude.json`) and configures gateway to use it — zero API cost for Claude models | MUST |
+| REQ-17.2 | Wizard auto-detects OpenAI Codex CLI credentials (`~/.codex/auth.json`) and configures gateway to use ChatGPT Plus OAuth — zero API cost for `gpt-5.3-codex` | MUST |
+| REQ-17.3 | OAuth tokens stored in Kubernetes Secrets (`anthropic-oauth`, `openai-codex-oauth`) — never on disk or in env vars | MUST |
+| REQ-17.4 | OAuth tokens injected into gateway auth-profiles.json at pod startup — one profile per OAuth provider | MUST |
+| REQ-17.5 | OpenAI Codex OAuth refresh script (`openai-codex-refresh.sh`) installed as cron job — runs every 6 hours to refresh tokens before expiry | MUST |
+| REQ-17.6 | `OPENAI_CODEX_OAUTH_MODEL_PREFIXES` env var controls which model strings route through Codex OAuth profile (default: `["gpt-5.3-codex"]`) | MUST |
+| REQ-17.7 | Wizard install step installs `@openai/codex` npm package globally — enables device-auth login for ChatGPT Plus | SHOULD |
+| REQ-17.8 | When Codex CLI is installed but `auth.json` is absent, wizard skips Codex OAuth setup with informational message | MUST |
+| REQ-17.9 | `chatgpt.com` and `auth.openai.com` added to egress whitelist — required for Codex OAuth inference and token refresh | MUST |
 
 ### REQ-10: NAS File Index
 
@@ -387,10 +401,11 @@ agent_model_configs:
     optimize_prompts: false
 
   token-audit:
-    primary: local-fast          # Polls APIs, minimal LLM usage
-    fallbacks: [claude-sonnet]
-    max_budget: 3
+    primary: openai-codex/gpt-5.3-codex  # ChatGPT Plus OAuth — zero API cost when available
+    fallbacks: [gemini/gemini-2.0-flash, openai/gpt-4o]
+    max_budget: 0                         # $0 when using ChatGPT Plus OAuth
     optimize_prompts: false
+    # Falls back to local-fast if Codex CLI OAuth not configured
 
   content-creator:
     primary: claude-sonnet
@@ -525,7 +540,7 @@ HSET ocl:subscription:anthropic
 XADD ocl:dlp:log * agent <id> direction outbound target "<url>" stripped_count 3 timestamp "<ISO>"
 
 # ═══ EGRESS REPUTATION ═══
-SADD ocl:egress:whitelist "api.openai.com" "api.anthropic.com" "arxiv.org"
+SADD ocl:egress:whitelist "api.openai.com" "api.anthropic.com" "arxiv.org" "chatgpt.com" "auth.openai.com"
 SADD ocl:egress:blacklist "<known-bad-endpoint>"
 
 # ═══ SECURITY AUDIT ═══
@@ -712,7 +727,7 @@ Check it's not already running (prevent duplicates):
 |-------|------|-------|---------|---------|
 | Commander | Home | Opus | bridge | Central orchestrator, human interface |
 | Watchdog | Home | local-fast | bridge | Commander failover, health monitoring |
-| Token Audit | Home | local-fast | bridge | Cost monitoring, runaway prevention |
+| Token Audit | Home | gpt-5.3-codex (ChatGPT Plus OAuth) or local-fast | bridge | Cost monitoring, runaway prevention |
 | Content Creator | Home | Sonnet | bridge | YouTube/TikTok content |
 | Quant Trader | Home | Opus | **none** | Trading analysis (air-gapped) |
 | Market Data Fetcher | Home | local-fast | bridge | Feeds market data to Quant Trader |
@@ -774,3 +789,8 @@ Check it's not already running (prevent duplicates):
 - [ ] ALKB learnings require human approval before agents consult them
 - [ ] ocl-upgrade pauses task queues cluster-wide before rolling restart
 - [ ] Cloud agents have local buffer queue for Redis split-brain resilience
+- [ ] Anthropic Max OAuth token stored in `anthropic-oauth` K8s Secret (not in env vars or on disk)
+- [ ] OpenAI Codex OAuth tokens stored in `openai-codex-oauth` K8s Secret — never in cmdline args (`--from-literal` avoided)
+- [ ] `openai-codex-refresh.sh` cron job installed — refreshes Codex OAuth token every 6 hours
+- [ ] `chatgpt.com` and `auth.openai.com` in egress whitelist for Codex OAuth inference and refresh
+- [ ] Gateway startup script writes auth-profiles.json from secrets at runtime — OAuth tokens never baked into image

@@ -1,6 +1,6 @@
 # OCL Agent Network — Prerequisites & Interactive Setup Guide
 
-## Version 16.0
+## Version 20.0
 
 This document provides every step required before running `bash setup-wizard.sh` in interactive mode. Complete ALL sections in order. Each section ends with a verification command.
 
@@ -395,6 +395,58 @@ This is the cheapest option for system agents (Watchdog, Token Audit) in Direct 
 2. Create account → go to **API Keys**
 3. Generate and copy key
 
+### Step 6.5: Claude Max Subscription — Anthropic OAuth (Optional, Zero API Cost)
+
+If you have an **Anthropic Max subscription**, the wizard can use it instead of API keys for all Claude models — no per-token billing.
+
+1. Install Claude Code CLI on this machine if not already installed:
+   ```bash
+   npm install -g @anthropic-ai/claude-code
+   ```
+2. Log in to your Anthropic Max account:
+   ```bash
+   claude login
+   ```
+3. Complete the browser OAuth flow. Credentials are saved to `~/.claude.json`.
+4. Verify authentication:
+   ```bash
+   cat ~/.claude.json | python3 -c "import sys,json; d=json.load(sys.stdin); print('✅ Claude Max OAuth active') if d.get('oauthToken') else print('❌ No OAuth token found')"
+   ```
+
+The wizard auto-detects `~/.claude.json` and configures gateway agents to use the OAuth profile. No Anthropic API key is needed when Claude Max OAuth is active.
+
+### Step 6.6: OpenAI Codex CLI — ChatGPT Plus OAuth (Optional, Zero API Cost)
+
+If you have a **ChatGPT Plus subscription**, the wizard can authenticate via the OpenAI Codex CLI to use `gpt-5.3-codex` models at zero API cost. The `token-audit` agent is automatically assigned to this provider when configured.
+
+1. Install the OpenAI Codex CLI (the wizard installs this automatically, but you can do it manually):
+   ```bash
+   npm install -g @openai/codex
+   ```
+2. Log in with your ChatGPT Plus account using device authorization:
+   ```bash
+   codex login --device-auth
+   ```
+3. Follow the prompts:
+   - Open the displayed URL (https://auth.openai.com/codex/device) in your browser
+   - Enter the one-time code shown in the terminal
+   - Sign in with the Google/Microsoft account linked to your ChatGPT Plus subscription
+4. Verify credentials were saved:
+   ```bash
+   [ -f ~/.codex/auth.json ] && python3 -c "
+   import json
+   d = json.load(open('$HOME/.codex/auth.json'))
+   plan = d.get('tokens', {})
+   print('✅ Codex CLI authenticated (auth_mode:', d.get('auth_mode'), ')')
+   " || echo "❌ ~/.codex/auth.json not found — login may have failed"
+   ```
+5. Note: Codex CLI OAuth tokens expire in ~10 days. The wizard installs a cron job (`openai-codex-refresh.sh`) that refreshes tokens every 6 hours automatically.
+
+**What this enables:**
+- `token-audit` agent uses `gpt-5.3-codex` via ChatGPT Plus — zero API cost
+- Falls back to `gemini/gemini-2.0-flash` → `openai/gpt-4o` if token expires
+- Inference routes through `chatgpt.com/backend-api` (NOT `api.openai.com`)
+
 ### Key Storage (BEFORE Running Wizard)
 
 Store your keys temporarily in a secure location. The wizard collects them via secure stdin (no echo) and immediately injects them into Kubernetes Secrets. Keys never touch disk.
@@ -512,12 +564,29 @@ CONFLICTS=$(sudo ss -tlnp 2>/dev/null | grep -cE '6443|6379|4000|11434' || echo 
 
 echo ""
 echo "Have ready:"
-echo "  □ Anthropic API key (sk-ant-...)"
+echo "  □ Anthropic API key (sk-ant-...) OR Claude Max subscription (see Section 6.5)"
 echo "  □ OpenAI API key (sk-...) [optional]"
 echo "  □ Google AI API key [optional]"
 echo "  □ Telegram bot token"
 echo "  □ Telegram group ID"
 echo "  □ NAS IP address"
+echo ""
+
+# 7. Optional: Claude Max OAuth
+if [ -f "$HOME/.claude.json" ]; then
+    CLAUDE_OAUTH=$(python3 -c "import json; d=json.load(open('$HOME/.claude.json')); print('yes') if d.get('oauthToken') else print('no')" 2>/dev/null || echo "no")
+    [ "$CLAUDE_OAUTH" = "yes" ] && echo "✅ Claude Max OAuth detected — API key optional" || echo "ℹ️  ~/.claude.json found but no oauthToken"
+else
+    echo "ℹ️  Claude Max OAuth not configured (Section 6.5 — optional)"
+fi
+
+# 8. Optional: OpenAI Codex CLI OAuth
+if [ -f "$HOME/.codex/auth.json" ]; then
+    CODEX_MODE=$(python3 -c "import json; d=json.load(open('$HOME/.codex/auth.json')); print(d.get('auth_mode',''))" 2>/dev/null || echo "")
+    [ "$CODEX_MODE" = "chatgpt" ] && echo "✅ OpenAI Codex OAuth detected — token-audit will use gpt-5.3-codex (zero cost)" || echo "ℹ️  ~/.codex/auth.json found but auth_mode is not chatgpt"
+else
+    echo "ℹ️  OpenAI Codex CLI OAuth not configured (Section 6.6 — optional)"
+fi
 ```
 
 ---
@@ -557,10 +626,13 @@ The wizard guides you through 10 steps. Here's what to expect at each one:
 - The wizard mounts with NFSv4.1 and creates the directory structure
 - If NFSv4.1 fails, you'll see a loud warning — fix your NAS settings before proceeding
 
-**Step 3 — API Keys** (secure input — nothing is echoed)
+**Step 3 — API Keys & OAuth Detection** (secure input — nothing is echoed)
+- The wizard first auto-detects OAuth credentials:
+  - If `~/.claude.json` contains an `oauthToken`, Anthropic API key becomes optional
+  - If `~/.codex/auth.json` contains `auth_mode: chatgpt`, Codex CLI OAuth is activated and `token-audit` is assigned `gpt-5.3-codex` at zero cost
 - Paste each API key when prompted. Press Enter to skip optional keys.
-- At least one key is required. Keys go directly into Kubernetes Secrets.
-- Keys are cleared from shell memory immediately after injection.
+- At least one LLM provider (API key or OAuth) is required.
+- Keys go directly into Kubernetes Secrets — cleared from shell memory immediately after injection.
 
 **Step 4 — Telegram Configuration**
 - Enter your bot token, group ID, and user ID
@@ -729,7 +801,7 @@ bash setup-wizard.sh
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│              OCL Agent Network v15.0                  │
+│              OCL Agent Network v20.0                  │
 │            Quick Reference Card                       │
 ├──────────────────────────────────────────────────────┤
 │                                                       │
