@@ -2285,9 +2285,25 @@ spec:
             - |
               # [NF5] openclaw is pre-installed on the host and mounted via hostPath.
               # In-container npm install is not used: node:slim lacks git required by openclaw deps.
+              ANTHROPIC_KEY=\$(cat /run/secrets/ANTHROPIC_API_KEY 2>/dev/null || true)
+              OPENAI_KEY=\$(cat /run/secrets/OPENAI_API_KEY 2>/dev/null || true)
+              GOOGLE_KEY=\$(cat /run/secrets/GOOGLE_API_KEY 2>/dev/null || true)
               mkdir -p /home/node/.openclaw
               cp /config/openclaw.json /home/node/.openclaw/openclaw.json
               cp /souls/*.md /home/node/.openclaw/ 2>/dev/null || true
+              # [NF6] Write auth-profiles.json for each agent from mounted secrets.
+              # openclaw looks for auth-profiles.json per-agent; without it all model calls fail.
+              AUTH_JSON="{\"version\":1,\"profiles\":{"
+              AUTH_JSON="\${AUTH_JSON}\"anthropic\":{\"type\":\"api_key\",\"provider\":\"anthropic\",\"key\":\"\${ANTHROPIC_KEY}\"},"
+              AUTH_JSON="\${AUTH_JSON}\"openai\":{\"type\":\"api_key\",\"provider\":\"openai\",\"key\":\"\${OPENAI_KEY}\"},"
+              AUTH_JSON="\${AUTH_JSON}\"google\":{\"type\":\"api_key\",\"provider\":\"google\",\"key\":\"\${GOOGLE_KEY}\"}"
+              AUTH_JSON="\${AUTH_JSON}}}"
+              for AGENT_ID in main commander watchdog token-audit content-creator researcher linkedin-mgr librarian; do
+                mkdir -p /home/node/.openclaw/agents/\${AGENT_ID}/agent
+                printf '%s' "\${AUTH_JSON}" > /home/node/.openclaw/agents/\${AGENT_ID}/agent/auth-profiles.json
+                chmod 600 /home/node/.openclaw/agents/\${AGENT_ID}/agent/auth-profiles.json
+              done
+              echo "Auth profiles written for: anthropic, openai, google"
               echo "OpenClaw version: \$(node /host-openclaw/openclaw.mjs --version 2>/dev/null || echo \${OCL_PINNED_VERSION})"
               exec node /host-openclaw/openclaw.mjs gateway --port 18789 --verbose
           ports: [{ containerPort: 18789 }]
