@@ -2312,13 +2312,13 @@ generate_openclaw_config() {
                 ;;
         esac
 
-        # [NF9] Per-model fallback chain: codex-plus routes via ChatGPT Plus OAuth so its
-        # fallbacks should avoid openai-codex (same quota) and prefer cheaper alternatives.
+        # [NF9] Per-model fallback chain — always escalate to top-tier models on failure.
+        # Avoid repeating the primary in fallbacks (e.g. opus primary → no opus fallback).
         local fallbacks_str
         case $model in
-            codex-plus)    fallbacks_str='"gemini/gemini-3.1-pro-preview","openai/gpt-4o"' ;;
-            claude-opus)   fallbacks_str='"anthropic/claude-sonnet-4-5","openai/gpt-4o"' ;;
-            *)             fallbacks_str='"openai/gpt-4o"' ;;
+            codex-plus)    fallbacks_str='"gemini/gemini-3.1-pro-preview","anthropic/claude-opus-4-6"' ;;
+            claude-opus)   fallbacks_str='"openai-codex/gpt-5.3-codex"' ;;
+            *)             fallbacks_str='"openai-codex/gpt-5.3-codex","anthropic/claude-opus-4-6"' ;;
         esac
 
         [ "$first" = true ] && first=false || agents_json+=","
