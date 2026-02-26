@@ -2645,8 +2645,11 @@ generate_openclaw_config() {
     "telegram": {
       "dmPolicy": "allowlist",
       "allowFrom": [${TELEGRAM_USER_ID:-0}],
-      "proxy": "http://egress-proxy-service.ocl-services:8080"
-    }
+      "proxy": "http://egress-proxy-service.ocl-services:8080",
+      "groupPolicy": "open",
+      "groups": {
+        "*": { "requireMention": false }
+      }
   }
 }
 OCEOF
