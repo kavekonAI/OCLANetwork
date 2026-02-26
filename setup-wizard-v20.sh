@@ -2438,15 +2438,20 @@ generate_openclaw_config() {
         case $model in
             codex-plus)      fallbacks_str='"google/gemini-3.1-pro-preview","anthropic/claude-opus-4-6"' ;;
             claude-opus)     fallbacks_str='"google/gemini-3.1-pro-preview","openai-codex/gpt-5.3-codex"' ;;
-            gemini-research) fallbacks_str='"anthropic/claude-opus-4-6","openai-codex/gpt-5.3-codex"' ;;
+            gemini-research) fallbacks_str='"google/gemini-3-flash-preview","anthropic/claude-opus-4-6","openai-codex/gpt-5.3-codex"' ;;
             *)               fallbacks_str='"openai-codex/gpt-5.3-codex","anthropic/claude-opus-4-6"' ;;
         esac
+
+        # [NF10] Commander spawn allowlist — allows commander to delegate to all other agents.
+        # Without this, sessions_spawn only allows an agent to spawn itself.
+        local subagents_block=""
+        [ "$id" = "commander" ] && subagents_block=',\n      "subagents": { "allowAgents": ["*"] }'
 
         [ "$first" = true ] && first=false || agents_json+=","
         # [L11] Use printf for cleaner JSON concatenation (no stray blank lines)
         # [NF7] sandbox mode:off — agents run inside k3s pod; Docker not available in-container.
         # Security is provided by NetworkPolicy + egress proxy rather than Docker sandbox.
-        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": [%s]\n      },\n      "sandbox": { "mode": "off" }\n    }' "$id" "$id" "$id" "$model_str" "$fallbacks_str")
+        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": [%s]\n      },\n      "sandbox": { "mode": "off" }'"${subagents_block}"'\n    }' "$id" "$id" "$id" "$model_str" "$fallbacks_str")
     done
     agents_json+=$'\n  ]'
 
