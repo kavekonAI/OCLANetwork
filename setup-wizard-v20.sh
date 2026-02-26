@@ -2496,7 +2496,8 @@ generate_openclaw_config() {
   "channels": {
     "telegram": {
       "dmPolicy": "allowlist",
-      "allowFrom": [${TELEGRAM_USER_ID:-0}]
+      "allowFrom": [${TELEGRAM_USER_ID:-0}],
+      "proxy": "http://egress-proxy-service.ocl-services:8080"
     }
   }
 }
@@ -2610,6 +2611,43 @@ try {
   }
 } catch(e) { console.warn('[proxy-init] proxy setup failed:', e.message); }
 PROXY_INIT_EOF
+              # Patch Anthropic SDK shims.js to use undici ProxyAgent per-request.
+              # Node 22's built-in fetch ignores global dispatcher set via external undici pkg.
+              # This ensures LLM API calls from the embedded agent also route through the proxy.
+              SHIMS_JS="/host-openclaw/node_modules/@anthropic-ai/sdk/internal/shims.js"
+              if [ -f "\$SHIMS_JS" ] && ! grep -q 'PROXY_PATCH' "\$SHIMS_JS" 2>/dev/null; then
+                node -e "
+const fs = require('fs');
+const p = '\$SHIMS_JS';
+const s = fs.readFileSync(p,'utf8');
+const patch = \`// PROXY_PATCH: use undici ProxyAgent per-request when HTTPS_PROXY is set
+function getDefaultFetch() {
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+    if (proxyUrl) {
+        try {
+            const path = require('path');
+            const { fetch: undiciFetch, ProxyAgent } = require(path.join(__dirname, '../../../undici'));
+            const pa = new ProxyAgent({ uri: proxyUrl });
+            return (url, opts) => undiciFetch(url, Object.assign({}, opts, { dispatcher: pa }));
+        } catch(e) {}
+    }
+    if (typeof fetch !== 'undefined') { return fetch; }
+    throw new Error('\\\`fetch\\\` is not defined as a global');
+}\`;
+const orig = 'function getDefaultFetch() {';
+const end = 'throw new Error(\\\`\\\`fetch\\\` is not defined as a global; Either pass \\\`fetch\\\` to the client';
+const startIdx = s.indexOf(orig);
+const endIdx = s.indexOf(end);
+if (startIdx > -1 && endIdx > -1) {
+  const closeIdx = s.indexOf('}', endIdx) + 1;
+  const patched = s.substring(0, startIdx) + patch + s.substring(closeIdx);
+  fs.writeFileSync(p, patched);
+  console.log('[startup] Patched @anthropic-ai/sdk shims.js for proxy support');
+} else {
+  console.warn('[startup] shims.js patch: markers not found, skipping');
+}
+" 2>/dev/null || true
+              fi
               OPENAI_KEY=\$(cat /run/secrets/OPENAI_API_KEY 2>/dev/null || true)
               GOOGLE_KEY=\$(cat /run/secrets/GOOGLE_API_KEY 2>/dev/null || true)
               mkdir -p /home/node/.openclaw
@@ -2619,7 +2657,7 @@ PROXY_INIT_EOF
               # Copy souls to workspace dirs — openclaw reads workspace-{agent}/SOUL.md not top-level
               # Also seed workspace-state.json so openclaw skips the BOOTSTRAP onboarding flow
               # (workspace is ephemeral; without this, agents enter "new agent setup" on every pod restart)
-              BOOT_TS=\$(node -e "process.stdout.write(new Date().toISOString())")
+              BOOT_TS=\$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
               for SOUL_FILE in /souls/*.md; do
                 AGENT_ID=\$(basename "\$SOUL_FILE" .md)
                 WS_DIR="/home/node/.openclaw/workspace-\${AGENT_ID}"
