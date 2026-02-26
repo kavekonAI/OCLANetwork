@@ -2477,7 +2477,13 @@ generate_openclaw_config() {
   },
   "agents": {
     "defaults": {
-      "sandbox": { "mode": "off" }
+      "sandbox": { "mode": "off" },
+      "memorySearch": {
+        "enabled": true,
+        "provider": "gemini",
+        "fallback": "none",
+        "sources": ["memory", "sessions"]
+      }
     },
     "list": ${agents_json}
   },
@@ -2712,7 +2718,9 @@ fi)
           volumeMounts:
             - { name: config, mountPath: /config }
             - { name: souls, mountPath: /souls }
-            - { name: nas, mountPath: /mnt/nas }
+            # mountPropagation: HostToContainer is required — without it the pod sees the empty
+            # mount point (mode 0000) instead of the NFS filesystem mounted on the host.
+            - { name: nas, mountPath: /mnt/nas, mountPropagation: HostToContainer }
             - { name: local-ssd, mountPath: /home/ocl-local }
             - { name: api-secrets, mountPath: /run/secrets, readOnly: true }
             - { name: host-openclaw, mountPath: /host-openclaw, readOnly: true }
