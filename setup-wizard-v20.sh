@@ -2775,6 +2775,9 @@ if (funcStart > -1 && funcEnd > 0) {
         gw_cpu_limit="1"
     fi
 
+    # Ensure credentials.json is readable by pod (uid 1000) — host user is uid 1001 (ocl)
+    [ -f "${HOME}/.claude/.credentials.json" ] && chmod 646 "${HOME}/.claude/.credentials.json" 2>/dev/null || true
+
     cat > "${K8S_DIR}/gateway-${TIER}.yaml" << GWEOF
 apiVersion: apps/v1
 kind: Deployment
@@ -2899,41 +2902,69 @@ PROXY_INIT_EOF
               done
               echo "Auth profiles written for: anthropic, openai, openai-codex, google"
               echo "OpenClaw version: \$(node /host-openclaw/openclaw.mjs --version 2>/dev/null || echo \${OCL_PINNED_VERSION})"
-              # ── Background token-sync loop ──────────────────────────────────
-              # openclaw re-reads auth-profiles.json from disk on EVERY API call (no cache).
-              # This loop reads ~/.claude/.credentials.json (mounted via hostPath) every 60s
-              # and updates auth-profiles.json when the token changes — zero-downtime refresh.
-              (
-                LAST_TOK=""
-                while true; do
-                  sleep 60
-                  if [ -f /creds/.credentials.json ]; then
-                    CUR_TOK=\$(node -e "try{const d=JSON.parse(require('fs').readFileSync('/creds/.credentials.json','utf8'));console.log(d.claudeAiOauth.accessToken)}catch(e){}" 2>/dev/null)
-                    if [ -n "\${CUR_TOK}" ] && [ "\${CUR_TOK}" != "\${LAST_TOK}" ]; then
-                      CUR_REF=\$(node -e "try{const d=JSON.parse(require('fs').readFileSync('/creds/.credentials.json','utf8'));console.log(d.claudeAiOauth.refreshToken)}catch(e){}" 2>/dev/null)
-                      CUR_EXP=\$(node -e "try{const d=JSON.parse(require('fs').readFileSync('/creds/.credentials.json','utf8'));console.log(d.claudeAiOauth.expiresAt)}catch(e){}" 2>/dev/null)
-                      for AGENT_DIR in /home/node/.openclaw/agents/*/agent/; do
-                        if [ -f "\${AGENT_DIR}auth-profiles.json" ]; then
-                          node -e "
-                            const fs=require('fs');
-                            const p=JSON.parse(fs.readFileSync('\${AGENT_DIR}auth-profiles.json','utf8'));
-                            if(p.profiles&&p.profiles.anthropic){
-                              p.profiles.anthropic.access='\${CUR_TOK}';
-                              p.profiles.anthropic.refresh='\${CUR_REF}';
-                              p.profiles.anthropic.expires=Number('\${CUR_EXP}')||0;
-                              fs.writeFileSync('\${AGENT_DIR}auth-profiles.json',JSON.stringify(p));
-                              fs.chmodSync('\${AGENT_DIR}auth-profiles.json',0o600);
-                            }
-                          " 2>/dev/null
-                        fi
-                      done
-                      LAST_TOK="\${CUR_TOK}"
-                      echo "[token-sync] Anthropic token updated in auth-profiles.json"
-                    fi
-                  fi
-                done
-              ) &
-              echo "[token-sync] Background token sync started (60s interval)"
+              # ── Background token-sync + auto-refresh ────────────────────────
+              # Runs every 60s: syncs token changes + auto-refreshes when <2h from expiry
+              # via CONNECT tunnel through egress proxy. Worst-case latency: 60 seconds.
+              # CronJob (every 30m) is a safety-net backup only.
+              cat > /tmp/token-sync.js << 'TOKEN_SYNC_EOF'
+const fs=require('fs'),http=require('http'),tls=require('tls');
+const CID='9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const PH='egress-proxy-service.ocl-services',PP=8080;
+const CP='/creds/.credentials.json',AB='/home/node/.openclaw/agents';
+let lastTok='',refreshing=false;
+async function sync(){
+  try{
+    if(!fs.existsSync(CP))return;
+    const creds=JSON.parse(fs.readFileSync(CP,'utf8'));
+    const oa=creds.claudeAiOauth;if(!oa||!oa.accessToken)return;
+    const em=Math.floor((oa.expiresAt-Date.now())/60000);
+    if(em<120&&!refreshing&&oa.refreshToken){
+      refreshing=true;
+      console.log('[token-sync] Token expires in '+em+'m, refreshing...');
+      try{
+        const b=JSON.stringify({grant_type:'refresh_token',client_id:CID,refresh_token:oa.refreshToken});
+        const r=await proxy('console.anthropic.com','/v1/oauth/token',b);
+        const d=JSON.parse(r);
+        if(d.access_token){
+          oa.accessToken=d.access_token;
+          if(d.refresh_token)oa.refreshToken=d.refresh_token;
+          if(d.expires_in)oa.expiresAt=Date.now()+d.expires_in*1000;
+          creds.claudeAiOauth=oa;
+          fs.writeFileSync(CP,JSON.stringify(creds));
+          lastTok='';
+          console.log('[token-sync] Refreshed! Expires in '+Math.floor((oa.expiresAt-Date.now())/60000)+'m');
+        }else{console.error('[token-sync] No access_token in response');}
+      }catch(e){console.error('[token-sync] Refresh failed:',e.message);}
+      refreshing=false;
+    }
+    if(oa.accessToken!==lastTok){
+      let u=0;
+      try{const dirs=fs.readdirSync(AB,{withFileTypes:true}).filter(d=>d.isDirectory()).map(d=>AB+'/'+d.name+'/agent/auth-profiles.json');
+      for(const pp of dirs){try{if(!fs.existsSync(pp))continue;const p=JSON.parse(fs.readFileSync(pp,'utf8'));
+        if(p.profiles&&p.profiles.anthropic){p.profiles.anthropic.access=oa.accessToken;p.profiles.anthropic.refresh=oa.refreshToken||'';
+        p.profiles.anthropic.expires=oa.expiresAt||0;fs.writeFileSync(pp,JSON.stringify(p));fs.chmodSync(pp,0o600);u++;}
+      }catch(e){}}}catch(e){}
+      lastTok=oa.accessToken;
+      console.log('[token-sync] Updated '+u+' profiles (expires '+Math.floor((oa.expiresAt-Date.now())/60000)+'m)');
+    }
+  }catch(e){console.error('[token-sync] Error:',e.message);}
+}
+function proxy(h,p,b){return new Promise((ok,no)=>{
+  const t=setTimeout(()=>no(new Error('timeout')),30000);
+  const pr=http.request({host:PH,port:PP,method:'CONNECT',path:h+':443'});
+  pr.on('connect',(res,sock)=>{if(res.statusCode!==200){clearTimeout(t);sock.destroy();no(new Error('CONNECT '+res.statusCode));return;}
+    const ts=tls.connect({socket:sock,servername:h},()=>{
+      ts.write(['POST '+p+' HTTP/1.1','Host: '+h,'Content-Type: application/json','Content-Length: '+Buffer.byteLength(b),'Connection: close','',b].join('\r\n'));
+      let r='';ts.on('data',c=>r+=c.toString());
+      ts.on('end',()=>{clearTimeout(t);const m=r.match(/^HTTP\/[\d.]+ (\d+)/);const s=m?parseInt(m[1]):0;
+        const i=r.indexOf('\r\n\r\n');const rb=i>=0?r.substring(i+4):r;
+        if(s>=400)no(new Error('HTTP '+s+': '+rb.substring(0,300)));else ok(rb);});
+    });ts.on('error',e=>{clearTimeout(t);no(e);});
+  });pr.on('error',e=>{clearTimeout(t);no(e);});pr.end();
+});}
+setTimeout(()=>{sync();setInterval(sync,60000);console.log('[token-sync] Active: 60s sync+refresh');},30000);
+TOKEN_SYNC_EOF
+              node /tmp/token-sync.js &
               # proxy-init.js was already created at the start of this script.
               # NODE_OPTIONS is set in the container env so all node processes use it automatically.
               exec node /host-openclaw/openclaw.mjs gateway --port 18789 --verbose
@@ -3005,7 +3036,7 @@ fi)
             - { name: local-ssd, mountPath: /home/ocl-local }
             - { name: api-secrets, mountPath: /run/secrets, readOnly: true }
             - { name: host-openclaw, mountPath: /host-openclaw, readOnly: true }
-            - { name: claude-creds, mountPath: /creds/.credentials.json, readOnly: true }
+            - { name: claude-creds, mountPath: /creds/.credentials.json }
           resources:
             requests: { memory: "${gw_mem_request}", cpu: "${gw_cpu_request}" }
             limits: { memory: "${gw_mem_limit}", cpu: "${gw_cpu_limit}" }
