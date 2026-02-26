@@ -1454,7 +1454,7 @@ EGRESSEOF
         "api.github.com" "huggingface.co" "finance.yahoo.com" "api.alphavantage.co" \
         "fred.stlouisfed.org" "registry.npmjs.org" "api.telegram.org" \
         "generativelanguage.googleapis.com" "aiplatform.googleapis.com" "oauth2.googleapis.com" \
-        "chatgpt.com" "auth.openai.com" >/dev/null 2>&1 || true
+        "chatgpt.com" "auth.openai.com" "console.anthropic.com" >/dev/null 2>&1 || true
     echo ""; ok "Egress Proxy + regex blocklist + reputation whitelist"
 
     # ── NetworkPolicy — Agent Egress Lockdown [Gap Y3] ──
@@ -2545,6 +2545,66 @@ deploy_gateway_pod() {
         ocl_module_path="$(npm root -g)/openclaw"
     fi
 
+    # Patch Anthropic SDK shims.js + shims.mjs to use undici ProxyAgent per-request.
+    # The hostPath mount is read-only inside the pod, so patches MUST run here on the host.
+    # Without this, Node 22's built-in fetch (and ESM imports) bypass the egress proxy entirely.
+    local shims_js="${ocl_module_path}/node_modules/@anthropic-ai/sdk/internal/shims.js"
+    local shims_mjs="${ocl_module_path}/node_modules/@anthropic-ai/sdk/internal/shims.mjs"
+    if [ -f "${shims_js}" ] && ! grep -q 'PROXY_PATCH' "${shims_js}" 2>/dev/null; then
+        node -e "
+const fs = require('fs');
+const p = '${shims_js}';
+const s = fs.readFileSync(p,'utf8');
+const patch = \`// PROXY_PATCH: use undici ProxyAgent per-request when HTTPS_PROXY is set
+// Node 22's built-in fetch ignores global dispatcher — must wrap per-request.
+function getDefaultFetch() {
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+    if (proxyUrl) {
+        try {
+            const path = require('path');
+            const { fetch: undiciFetch, ProxyAgent } = require(path.join(__dirname, '../../../undici'));
+            const pa = new ProxyAgent({ uri: proxyUrl });
+            return (url, opts) => undiciFetch(url, Object.assign({}, opts, { dispatcher: pa }));
+        } catch(e) {}
+    }
+    if (typeof fetch !== 'undefined') { return fetch; }
+    throw new Error('\\\`fetch\\\` is not defined as a global');
+}\`;
+const orig = 'function getDefaultFetch() {';
+const end = 'throw new Error(\\\`\\\`fetch\\\` is not defined as a global; Either pass';
+const startIdx = s.indexOf(orig);
+const endIdx = s.indexOf(end);
+if (startIdx > -1 && endIdx > -1) {
+  const closeIdx = s.indexOf('}', endIdx) + 1;
+  fs.writeFileSync(p, s.substring(0, startIdx) + patch + s.substring(closeIdx));
+  console.log('[wizard] Patched @anthropic-ai/sdk/internal/shims.js for egress proxy');
+} else {
+  console.warn('[wizard] shims.js: markers not found — skipping');
+}
+" 2>/dev/null || true
+    fi
+    if [ -f "${shims_mjs}" ] && ! grep -q 'PROXY_PATCH' "${shims_mjs}" 2>/dev/null; then
+        node -e "
+const fs = require('fs');
+const p = '${shims_mjs}';
+const s = fs.readFileSync(p,'utf8');
+const patchHeader = '// PROXY_PATCH: ESM version — per-request undici ProxyAgent for egress proxy support\nimport { createRequire } from \"module\";\nimport { fileURLToPath } from \"url\";\nimport path from \"path\";\nconst _require = createRequire(import.meta.url);\nconst _shimDir = path.dirname(fileURLToPath(import.meta.url));\n';
+const patchFunc = 'export function getDefaultFetch() {\n    const proxyUrl = (typeof process !== \"undefined\") && (process.env.HTTPS_PROXY || process.env.HTTP_PROXY);\n    if (proxyUrl) {\n        try {\n            const undiciPath = path.join(_shimDir, \"../../../undici\");\n            const { fetch: undiciFetch, ProxyAgent } = _require(undiciPath);\n            const pa = new ProxyAgent({ uri: proxyUrl });\n            return (url, opts) => undiciFetch(url, Object.assign({}, opts, { dispatcher: pa }));\n        } catch(e) {}\n    }\n    if (typeof fetch !== \"undefined\") { return fetch; }\n    throw new Error(\"\`fetch\` is not defined as a global\");\n}';
+const stainlessLine = s.indexOf('// File generated from our OpenAPI spec');
+const funcStart = s.indexOf('export function getDefaultFetch()');
+const throwIdx = s.indexOf('throw new Error(', funcStart);
+const funcEnd = s.indexOf('}', throwIdx) + 1;
+if (funcStart > -1 && funcEnd > 0) {
+  const afterComment = s.indexOf('\n', stainlessLine) + 1;
+  const patched = s.substring(0, afterComment) + patchHeader + patchFunc + '\n' + s.substring(funcEnd);
+  fs.writeFileSync(p, patched);
+  console.log('[wizard] Patched @anthropic-ai/sdk/internal/shims.mjs for egress proxy');
+} else {
+  console.warn('[wizard] shims.mjs: markers not found — skipping');
+}
+" 2>/dev/null || true
+    fi
+
     # Adaptive resource limits: Phase 0 (8GB) vs Phase 1+ (16GB+)
     local gw_mem_request="1Gi" gw_mem_limit="4Gi" gw_cpu_request="500m" gw_cpu_limit="2"
     if [ "${OPTIMIZER_ACTIVE:-true}" = "false" ]; then
@@ -2611,43 +2671,10 @@ try {
   }
 } catch(e) { console.warn('[proxy-init] proxy setup failed:', e.message); }
 PROXY_INIT_EOF
-              # Patch Anthropic SDK shims.js to use undici ProxyAgent per-request.
-              # Node 22's built-in fetch ignores global dispatcher set via external undici pkg.
-              # This ensures LLM API calls from the embedded agent also route through the proxy.
-              SHIMS_JS="/host-openclaw/node_modules/@anthropic-ai/sdk/internal/shims.js"
-              if [ -f "\$SHIMS_JS" ] && ! grep -q 'PROXY_PATCH' "\$SHIMS_JS" 2>/dev/null; then
-                node -e "
-const fs = require('fs');
-const p = '\$SHIMS_JS';
-const s = fs.readFileSync(p,'utf8');
-const patch = \`// PROXY_PATCH: use undici ProxyAgent per-request when HTTPS_PROXY is set
-function getDefaultFetch() {
-    const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-    if (proxyUrl) {
-        try {
-            const path = require('path');
-            const { fetch: undiciFetch, ProxyAgent } = require(path.join(__dirname, '../../../undici'));
-            const pa = new ProxyAgent({ uri: proxyUrl });
-            return (url, opts) => undiciFetch(url, Object.assign({}, opts, { dispatcher: pa }));
-        } catch(e) {}
-    }
-    if (typeof fetch !== 'undefined') { return fetch; }
-    throw new Error('\\\`fetch\\\` is not defined as a global');
-}\`;
-const orig = 'function getDefaultFetch() {';
-const end = 'throw new Error(\\\`\\\`fetch\\\` is not defined as a global; Either pass \\\`fetch\\\` to the client';
-const startIdx = s.indexOf(orig);
-const endIdx = s.indexOf(end);
-if (startIdx > -1 && endIdx > -1) {
-  const closeIdx = s.indexOf('}', endIdx) + 1;
-  const patched = s.substring(0, startIdx) + patch + s.substring(closeIdx);
-  fs.writeFileSync(p, patched);
-  console.log('[startup] Patched @anthropic-ai/sdk shims.js for proxy support');
-} else {
-  console.warn('[startup] shims.js patch: markers not found, skipping');
-}
-" 2>/dev/null || true
-              fi
+              # NOTE: @anthropic-ai/sdk shims.js + shims.mjs are patched on the HOST by the wizard
+              # (see deploy_gateway function). The hostPath mount is read-only inside the pod,
+              # so patching here would fail silently. The proxy patches ensure Node 22's built-in
+              # fetch (ESM + CJS) routes LLM API calls through the egress proxy.
               OPENAI_KEY=\$(cat /run/secrets/OPENAI_API_KEY 2>/dev/null || true)
               GOOGLE_KEY=\$(cat /run/secrets/GOOGLE_API_KEY 2>/dev/null || true)
               mkdir -p /home/node/.openclaw
