@@ -2636,6 +2636,18 @@ spec:
               done
               echo "Auth profiles written for: anthropic, openai, openai-codex, google"
               echo "OpenClaw version: \$(node /host-openclaw/openclaw.mjs --version 2>/dev/null || echo \${OCL_PINNED_VERSION})"
+              # Install undici EnvHttpProxyAgent so all fetch() calls (Gemini, Anthropic, etc.)
+              # route through the egress proxy. Node 22 fetch ignores HTTPS_PROXY without this.
+              cat > /tmp/proxy-init.js << 'PROXY_INIT_EOF'
+try {
+  const { EnvHttpProxyAgent, setGlobalDispatcher } = require('/host-openclaw/node_modules/undici');
+  if (process.env.HTTPS_PROXY || process.env.HTTP_PROXY) {
+    setGlobalDispatcher(new EnvHttpProxyAgent());
+    console.log('[proxy-init] undici EnvHttpProxyAgent active via', process.env.HTTPS_PROXY || process.env.HTTP_PROXY);
+  }
+} catch(e) { console.warn('[proxy-init] proxy setup failed:', e.message); }
+PROXY_INIT_EOF
+              export NODE_OPTIONS="--require /tmp/proxy-init.js"
               exec node /host-openclaw/openclaw.mjs gateway --port 18789 --verbose
           ports: [{ containerPort: 18789 }]
           envFrom:
