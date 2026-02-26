@@ -1,5 +1,5 @@
 # OCL Agent Network — Requirements & Architecture Document
-## Version 20.0 — Integration-Verified, Production-Ready, Production-Ready
+## Version 20.0 — Integration-Verified, Production-Ready
 
 ---
 
@@ -47,7 +47,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 |----|-------------|----------|
 | REQ-03.1 | Web-based dashboard accessible via Tailscale only; served on NodePort 30780; protected by Bearer token (32-byte hex, stored in k8s Secret `dashboard-token`) | MUST |
 | REQ-03.2 | Real-time via WebSocket + Redis XREAD BLOCK on ocl:security:audit and ocl:dlp:log; agent status polled every 15s | MUST |
-| REQ-03.3 | Agent list sourced from openclaw-home-config ConfigMap; status overlaid from ocl:heartbeat:* TTL and ocl:agent-status:* hash | MUST |
+| REQ-03.3 | Agent list sourced from `openclaw-home-config` ConfigMap; liveness derived from `deployment/gateway-home` `availableReplicas >= 1` via k8s API (10s cache); status overlaid from `ocl:agent-status:*` hash. Note: openclaw does NOT write `ocl:heartbeat:*` Redis keys — the `[heartbeat] started` log line is the Telegram ping feature, not a Redis heartbeat | MUST |
 | REQ-03.4 | Token usage graphs via LiteLLM API — **Phase 1 only** (panel hidden until LiteLLM detected at litellm-service:4000/health) | MUST |
 | REQ-03.5 | Task board view from Redis taskboard hashes | MUST |
 | REQ-03.6 | Cost tracking per agent and per provider | MUST |
@@ -366,6 +366,15 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-22.4 | The local SSD fallback at `/home/ocl-local/agents/` (owned by uid=1000) provides writable scratch space for agents when NAS is unavailable; the `ocl-nas-sync` CronJob (running as root) syncs it to the NAS | SHOULD |
 | REQ-22.5 | The gateway Deployment MUST include a `nas-chmod` initContainer (runs as `runAsUser: 0`) that executes `chmod a+rx /mnt/nas` before the main container starts — this resets any Synology NFSv4 ACL restrictions that would otherwise block uid=1000. The pod-level `runAsNonRoot: true` must be omitted to allow the init container to run as root; the main container still runs as `runAsUser: 1000` | MUST |
 
+### REQ-23: Telegram Group Chat Configuration
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-23.1 | `channels.telegram.groupPolicy` MUST be set to `"open"` — the default `"allowlist"` blocks all group messages unless the sender is in `groupAllowFrom`, silently dropping every group message with no log output | MUST |
+| REQ-23.2 | `channels.telegram.groups."*".requireMention` MUST be set to `false` — openclaw's `resolveTelegramRequireMention()` returns `true` (require @mention) when no group config exists, causing the routing match log to appear but no `telegram inbound:` or agent run to fire | MUST |
+| REQ-23.3 | Telegram bot privacy mode MUST be disabled via BotFather (`/setprivacy → Disable`) before the bot can receive plain group messages. Privacy mode change does NOT retroactively apply to groups the bot is already a member of — the bot must leave and rejoin for the change to take effect | MUST |
+| REQ-23.4 | The wizard MUST generate both `groupPolicy: "open"` and `groups."*".requireMention: false` in the openclaw config at deploy time so group chat works out of the box without manual post-deploy patching | MUST |
+
 ---
 
 ## 3. Architecture Overview
@@ -667,6 +676,17 @@ SADD ocl:learnings:by-status:open <learning-id>
 ---
 
 ## 6. Telegram Group Structure
+
+### Telegram Group Chat Configuration
+
+For the bot to receive and reply to plain messages in any Telegram group (without needing `@mention`), three conditions must all be met:
+
+1. **BotFather privacy mode OFF** — `/setprivacy → Disable` for the bot. Privacy mode change does NOT apply retroactively: the bot must leave and rejoin any existing groups.
+2. **`groupPolicy: "open"`** in `channels.telegram` — the default `"allowlist"` silently drops all group messages when `groupAllowFrom` is empty.
+3. **`groups."*".requireMention: false`** in `channels.telegram` — openclaw's `resolveTelegramRequireMention()` returns `true` (require mention) when no group config exists. With this unset, routing matches commander but no `telegram inbound:` or agent run fires.
+
+The wizard generates both (2) and (3) automatically. (1) must be done manually in BotFather once per bot.
+
 
 ```
 Private Group: "OCL Agent Network"

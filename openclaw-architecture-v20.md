@@ -59,7 +59,7 @@ Central orchestrator. Receives your Telegram DMs, delegates to specialists.
 
 - **Model:** Claude Opus 4.6
 - **Network:** bridge
-- **Heartbeat:** Writes `SET ocl:heartbeat:commander alive EX 120` every cycle
+- **Liveness:** Gateway pod `availableReplicas >= 1` (k8s API, 10s cache) — openclaw does NOT write `ocl:heartbeat:*` Redis keys; the `[heartbeat] started` log line is the Telegram ping feature
 - **Task routing:** Via Redis Streams, mirrored to Telegram group for visibility
 - **On recovery:** Checks Redis for tasks Watchdog routed while Commander was down
 
@@ -68,7 +68,7 @@ Lightweight failover monitor. Ensures Commander's death doesn't halt the network
 
 - **Model:** local-fast (Ollama phi4-mini, ~$5/mo)
 - **Network:** bridge
-- **Job:** Every 60s, check `GET ocl:heartbeat:commander`. If expired for >3min, take over simple task routing from Redis queues. Hand back control when Commander recovers.
+- **Job:** Every 60s, check `HGET ocl:agent-status:commander status`. If absent or gateway pod not ready for >3min, take over simple task routing from Redis queues. Hand back control when Commander recovers.
 - **Rules:** Never makes strategic decisions. Never approves trades or posts. Never contacts human directly except for Commander-down alerts.
 
 ### Content Creator
@@ -194,7 +194,7 @@ ocl:taskboard:<task_id>     Hash    Task status, assignments, results
 ocl:taskboard:index         Sorted  All task IDs sorted by time
 ocl:agent:<agent-id>        Stream  Per-agent task queue (HMAC-signed messages)
 ocl:results                 Stream  Task completion notifications (HMAC-signed)
-ocl:heartbeat:<agent-id>    String  Agent liveness (TTL 120s)
+ocl:heartbeat:<agent-id>    String  Reserved key namespace — openclaw does NOT write this; liveness is via k8s availableReplicas
 ocl:ratelimit:<agent-id>    Hash    Rate limit state per agent
 ocl:task-state:<agent>:<task> Hash  In-progress task checkpoint
 ocl:agent-status:<agent-id> Hash    Real-time status, token usage, provider tier
@@ -681,7 +681,7 @@ Running       🟢  Actively processing tasks
 Paused        🟡  Stopped accepting new tasks (current step completes)
 Rate-Limited  🟠  Waiting for provider reset (checkpointed)
 Stopped       🔴  Pod removed / nuked
-Error         ⚠️  Unhealthy (no heartbeat for >3 checks)
+Stopped       🔴  Gateway pod not ready (availableReplicas = 0)
 ```
 
 State is stored in Redis: `HSET ocl:agent-status:<id> status "paused" paused_at "<ISO>" paused_by "cli"`. The Universal Recovery Protocol checks this flag on every task pull — if paused, the agent skips the queue read and waits.
@@ -693,7 +693,7 @@ State is stored in Redis: `HSET ocl:agent-status:<id> status "paused" paused_at 
 - **Pause** / **Resume** toggle button
 - **Restart** button (rolling restart, no data loss)
 - **Nuke** button (confirmation dialog showing ALKB archive status)
-- Current task, last heartbeat, tokens today
+- Current task, gateway liveness, tokens today
 
 **Node Management Panel** — per-gateway row with:
 - Gateway status (all agents healthy / degraded / offline)

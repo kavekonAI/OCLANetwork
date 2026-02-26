@@ -195,7 +195,7 @@ This means:
 
 ```
 ✅ Home agents unaffected
-✅ Commander detects via expired heartbeats in Redis
+✅ Commander detects via ocl:agent-status:* hash + gateway pod readiness
 ✅ Commander re-queues unfinished tasks in Redis
 ✅ When cloud recovers: agents check Redis for incomplete tasks, resume
 ```
