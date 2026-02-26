@@ -2899,6 +2899,41 @@ PROXY_INIT_EOF
               done
               echo "Auth profiles written for: anthropic, openai, openai-codex, google"
               echo "OpenClaw version: \$(node /host-openclaw/openclaw.mjs --version 2>/dev/null || echo \${OCL_PINNED_VERSION})"
+              # ── Background token-sync loop ──────────────────────────────────
+              # openclaw re-reads auth-profiles.json from disk on EVERY API call (no cache).
+              # This loop reads ~/.claude/.credentials.json (mounted via hostPath) every 60s
+              # and updates auth-profiles.json when the token changes — zero-downtime refresh.
+              (
+                LAST_TOK=""
+                while true; do
+                  sleep 60
+                  if [ -f /creds/.credentials.json ]; then
+                    CUR_TOK=\$(node -e "try{const d=JSON.parse(require('fs').readFileSync('/creds/.credentials.json','utf8'));console.log(d.claudeAiOauth.accessToken)}catch(e){}" 2>/dev/null)
+                    if [ -n "\${CUR_TOK}" ] && [ "\${CUR_TOK}" != "\${LAST_TOK}" ]; then
+                      CUR_REF=\$(node -e "try{const d=JSON.parse(require('fs').readFileSync('/creds/.credentials.json','utf8'));console.log(d.claudeAiOauth.refreshToken)}catch(e){}" 2>/dev/null)
+                      CUR_EXP=\$(node -e "try{const d=JSON.parse(require('fs').readFileSync('/creds/.credentials.json','utf8'));console.log(d.claudeAiOauth.expiresAt)}catch(e){}" 2>/dev/null)
+                      for AGENT_DIR in /home/node/.openclaw/agents/*/agent/; do
+                        if [ -f "\${AGENT_DIR}auth-profiles.json" ]; then
+                          node -e "
+                            const fs=require('fs');
+                            const p=JSON.parse(fs.readFileSync('\${AGENT_DIR}auth-profiles.json','utf8'));
+                            if(p.profiles&&p.profiles.anthropic){
+                              p.profiles.anthropic.access='\${CUR_TOK}';
+                              p.profiles.anthropic.refresh='\${CUR_REF}';
+                              p.profiles.anthropic.expires=Number('\${CUR_EXP}')||0;
+                              fs.writeFileSync('\${AGENT_DIR}auth-profiles.json',JSON.stringify(p));
+                              fs.chmodSync('\${AGENT_DIR}auth-profiles.json',0o600);
+                            }
+                          " 2>/dev/null
+                        fi
+                      done
+                      LAST_TOK="\${CUR_TOK}"
+                      echo "[token-sync] Anthropic token updated in auth-profiles.json"
+                    fi
+                  fi
+                done
+              ) &
+              echo "[token-sync] Background token sync started (60s interval)"
               # proxy-init.js was already created at the start of this script.
               # NODE_OPTIONS is set in the container env so all node processes use it automatically.
               exec node /host-openclaw/openclaw.mjs gateway --port 18789 --verbose
@@ -2970,6 +3005,7 @@ fi)
             - { name: local-ssd, mountPath: /home/ocl-local }
             - { name: api-secrets, mountPath: /run/secrets, readOnly: true }
             - { name: host-openclaw, mountPath: /host-openclaw, readOnly: true }
+            - { name: claude-creds, mountPath: /creds/.credentials.json, readOnly: true }
           resources:
             requests: { memory: "${gw_mem_request}", cpu: "${gw_cpu_request}" }
             limits: { memory: "${gw_mem_limit}", cpu: "${gw_cpu_limit}" }
@@ -2988,6 +3024,8 @@ fi)
             defaultMode: 0400
         - name: host-openclaw
           hostPath: { path: "${ocl_module_path}", type: Directory }
+        - name: claude-creds
+          hostPath: { path: /home/ocl/.claude/.credentials.json, type: File }
 ---
 apiVersion: v1
 kind: Service
@@ -3872,7 +3910,7 @@ metadata:
   name: anthropic-oauth-refresh
   namespace: ocl-agents
 spec:
-  schedule: "0 */4 * * *"
+  schedule: "*/30 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
@@ -3891,76 +3929,133 @@ spec:
           - name: refresh
             image: node:22-alpine
             env:
-            - name: HTTPS_PROXY
-              value: "http://egress-proxy-service.ocl-services:8080"
-            - name: HTTP_PROXY
-              value: "http://egress-proxy-service.ocl-services:8080"
             - name: NO_PROXY
               value: "kubernetes.default.svc,kubernetes.default,10.0.0.0/8"
             volumeMounts:
             - name: claude-creds
               mountPath: /creds/.credentials.json
-              readOnly: true
             command: ["node", "-e"]
             args:
             - |
               const fs = require('fs');
+              const http = require('http');
               const https = require('https');
+              const tls = require('tls');
+
+              const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+              const PROXY_HOST = 'egress-proxy-service.ocl-services';
+              const PROXY_PORT = 8080;
 
               async function main() {
-                const creds = JSON.parse(fs.readFileSync('/creds/.credentials.json', 'utf8'));
+                const credsRaw = fs.readFileSync('/creds/.credentials.json', 'utf8');
+                const creds = JSON.parse(credsRaw);
                 const oauth = creds.claudeAiOauth;
                 const expiresIn = Math.floor((oauth.expiresAt - Date.now()) / 60000);
                 console.log(`[oauth-refresh] Token expires in ${expiresIn} minutes`);
 
                 let tokenToUse = oauth.accessToken;
+                let refreshToken = oauth.refreshToken;
+                let expiresAt = oauth.expiresAt;
+                let refreshed = false;
 
                 if (expiresIn < 120) {
-                  console.log('[oauth-refresh] Token expiring soon, refreshing via console.anthropic.com');
+                  console.log('[oauth-refresh] Token expiring soon, refreshing...');
                   try {
-                    const body = `grant_type=refresh_token&refresh_token=${encodeURIComponent(oauth.refreshToken)}`;
-                    const resp = await fetch('https://console.anthropic.com/v1/oauth/token', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                      body
+                    const reqBody = JSON.stringify({
+                      grant_type: 'refresh_token',
+                      client_id: CLIENT_ID,
+                      refresh_token: refreshToken
                     });
-                    if (resp.ok) {
-                      const data = await resp.json();
-                      if (data.access_token) {
-                        tokenToUse = data.access_token;
-                        console.log('[oauth-refresh] Got fresh access token');
-                      } else {
-                        console.log('[oauth-refresh] No access_token in response');
-                      }
+                    const respBody = await httpsViaProxy('console.anthropic.com', '/v1/oauth/token', reqBody);
+                    const data = JSON.parse(respBody);
+                    if (data.access_token) {
+                      tokenToUse = data.access_token;
+                      if (data.refresh_token) refreshToken = data.refresh_token;
+                      if (data.expires_in) expiresAt = Date.now() + data.expires_in * 1000;
+                      refreshed = true;
+                      console.log('[oauth-refresh] Got fresh token, expires in', data.expires_in, 'seconds');
                     } else {
-                      console.log(`[oauth-refresh] Refresh HTTP ${resp.status}: ${await resp.text()}`);
+                      console.error('[oauth-refresh] No access_token in response:', respBody.substring(0, 200));
+                      if (expiresIn <= 0) process.exit(1);
                     }
                   } catch (e) {
-                    console.log(`[oauth-refresh] Refresh error: ${e.message}`);
+                    console.error(`[oauth-refresh] REFRESH FAILED: ${e.message}`);
+                    if (expiresIn <= 0) process.exit(1);
                   }
                 } else {
-                  console.log('[oauth-refresh] Token still valid (>2h), syncing to secret');
+                  console.log('[oauth-refresh] Token still valid (>2h), syncing');
                 }
 
+                // Write refreshed tokens back to credentials.json (single source of truth).
+                // Both Claude Code and the gateway background loop read this file.
+                if (refreshed) {
+                  creds.claudeAiOauth.accessToken = tokenToUse;
+                  creds.claudeAiOauth.refreshToken = refreshToken;
+                  creds.claudeAiOauth.expiresAt = expiresAt;
+                  fs.writeFileSync('/creds/.credentials.json', JSON.stringify(creds));
+                  console.log('[oauth-refresh] credentials.json updated on host');
+                }
+
+                // Also sync to k8s secret (for pod restarts / env var bootstrap)
                 const saToken = fs.readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/token', 'utf8');
-                const a64 = Buffer.from(tokenToUse).toString('base64');
-
                 await k8sPatch('/api/v1/namespaces/ocl-agents/secrets/anthropic-oauth',
-                  JSON.stringify({ data: { ANTHROPIC_OAUTH_TOKEN: a64 } }), saToken);
-                console.log('[oauth-refresh] Secret updated');
+                  JSON.stringify({ data: {
+                    ANTHROPIC_OAUTH_TOKEN: b64(tokenToUse),
+                    ANTHROPIC_REFRESH_TOKEN: b64(refreshToken),
+                    ANTHROPIC_OAUTH_EXPIRES: b64(String(expiresAt))
+                  }}), saToken);
+                console.log('[oauth-refresh] k8s secret updated');
+              }
 
-                const ts = new Date().toISOString();
-                await k8sPatch('/apis/apps/v1/namespaces/ocl-agents/deployments/gateway-home',
-                  JSON.stringify({ spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': ts } } } } }), saToken);
-                console.log(`[oauth-refresh] Gateway restart triggered at ${ts}`);
+              function b64(s) { return Buffer.from(s).toString('base64'); }
+
+              // Raw HTTP/1.1 over TLS through egress proxy CONNECT tunnel.
+              // Node 22 https.request with createConnection drops Host header (causes 520).
+              function httpsViaProxy(host, path, body) {
+                return new Promise((resolve, reject) => {
+                  const proxyReq = http.request({
+                    host: PROXY_HOST, port: PROXY_PORT,
+                    method: 'CONNECT', path: `${host}:443`
+                  });
+                  proxyReq.on('connect', (proxyRes, socket) => {
+                    if (proxyRes.statusCode !== 200) {
+                      socket.destroy();
+                      reject(new Error(`Proxy CONNECT ${proxyRes.statusCode}`));
+                      return;
+                    }
+                    const tlsSocket = tls.connect({ socket, servername: host }, () => {
+                      const reqLines = [
+                        `POST ${path} HTTP/1.1`,
+                        `Host: ${host}`,
+                        'Content-Type: application/json',
+                        `Content-Length: ${Buffer.byteLength(body)}`,
+                        'Connection: close',
+                        '',
+                        body
+                      ].join('\r\n');
+                      tlsSocket.write(reqLines);
+                      let resp = '';
+                      tlsSocket.on('data', c => resp += c.toString());
+                      tlsSocket.on('end', () => {
+                        const statusMatch = resp.match(/^HTTP\/[\d.]+ (\d+)/);
+                        const status = statusMatch ? parseInt(statusMatch[1]) : 0;
+                        const bodyStart = resp.indexOf('\r\n\r\n');
+                        const respBody = bodyStart >= 0 ? resp.substring(bodyStart + 4) : resp;
+                        if (status >= 400) reject(new Error(`HTTP ${status}: ${respBody.substring(0, 300)}`));
+                        else resolve(respBody);
+                      });
+                    });
+                    tlsSocket.on('error', reject);
+                  });
+                  proxyReq.on('error', reject);
+                  proxyReq.end();
+                });
               }
 
               function k8sPatch(path, body, token) {
                 return new Promise((resolve, reject) => {
                   const req = https.request({
-                    hostname: 'kubernetes.default.svc',
-                    port: 443,
-                    path,
+                    hostname: 'kubernetes.default.svc', port: 443, path,
                     method: 'PATCH',
                     headers: {
                       'Authorization': `Bearer ${token}`,
@@ -3982,7 +4077,7 @@ spec:
               main().catch(e => { console.error(e); process.exit(1); });
 ANTHEOF
 
-    ok "anthropic-oauth-refresh CronJob deployed (every 4h)"
+    ok "anthropic-oauth-refresh CronJob deployed (every 30m)"
 
     # ── OpenAI Codex OAuth refresh CronJob (only if Codex OAuth is active) ──
     if [ "${HAS_CODEX_OAUTH:-false}" = "true" ]; then
