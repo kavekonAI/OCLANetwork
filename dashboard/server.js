@@ -81,6 +81,23 @@ async function k8sPatch(path, body) {
   });
 }
 
+// ── Gateway pod readiness cache ────────────────────────────────────────────
+let gatewayReadyCache = null;
+let gatewayReadyExpiry = 0;
+
+async function isGatewayReady() {
+  if (gatewayReadyCache !== null && Date.now() < gatewayReadyExpiry) return gatewayReadyCache;
+  try {
+    const res = await k8sGet('/apis/apps/v1/namespaces/ocl-agents/deployments/gateway-home');
+    const avail = res.body?.status?.availableReplicas || 0;
+    gatewayReadyCache = avail >= 1;
+  } catch {
+    gatewayReadyCache = false;
+  }
+  gatewayReadyExpiry = Date.now() + 10000; // 10s cache
+  return gatewayReadyCache;
+}
+
 // ── Agent list cache (from ConfigMap) ─────────────────────────────────────
 let agentListCache = null;
 let agentListExpiry = 0;
@@ -244,22 +261,23 @@ app.get('/api/agents', auth, async (req, res) => {
     const subStatus = await redis.hgetall('ocl:subscription:anthropic') || {};
     const isRateLimited = subStatus.status === 'rate_limited';
 
+    const gatewayUp = await isGatewayReady();
+
     const result = await Promise.all(agents.map(async (a) => {
       const id = a.id || a;
-      const [ttl, statusHash] = await Promise.all([
-        redis.ttl(`ocl:heartbeat:${id}`),
-        redis.hgetall(`ocl:agent-status:${id}`) || {},
-      ]);
+      const statusHash = (await redis.hgetall(`ocl:agent-status:${id}`)) || {};
       const agentStatus = statusHash.status || 'running';
       let display;
-      if (ttl > 0) {
-        if (agentStatus === 'paused') display = 'paused';
-        else if (isRateLimited) display = 'rate_limited';
-        else display = 'running';
-      } else {
+      if (!gatewayUp) {
         display = 'stopped';
+      } else if (agentStatus === 'paused') {
+        display = 'paused';
+      } else if (isRateLimited) {
+        display = 'rate_limited';
+      } else {
+        display = 'running';
       }
-      return { id, name: a.name || id, display, agentStatus, heartbeatTtl: ttl, ...statusHash };
+      return { id, name: a.name || id, display, agentStatus, gatewayReady: gatewayUp, ...statusHash };
     }));
     res.json(result);
   } catch (e) {
