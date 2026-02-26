@@ -1,7 +1,7 @@
 #!/bin/bash
 # Refresh Claude Max OAuth token and update k8s secret
 set -euo pipefail
-KUBECONFIG=/home/ocl/.kube/config
+export KUBECONFIG=/home/ocl/.kube/config
 CREDS=/home/ocl/.claude/.credentials.json
 
 ACCESS=$(python3 -c "import json; d=json.load(open('$CREDS')); print(d['claudeAiOauth']['accessToken'])")

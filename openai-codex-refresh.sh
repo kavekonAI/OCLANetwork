@@ -1,7 +1,7 @@
 #!/bin/bash
 # Refresh OpenAI Codex CLI OAuth token and update k8s secret
 set -euo pipefail
-KUBECONFIG=/home/ocl/.kube/config
+export KUBECONFIG=/home/ocl/.kube/config
 AUTH=/home/ocl/.codex/auth.json
 
 # Run codex to refresh the token (updates auth.json in place)
