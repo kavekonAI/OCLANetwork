@@ -340,6 +340,14 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-19.5 | Google API key MUST have billing enabled on the Google Cloud project — the free tier has a limit of 0 RPM for Gemini 2.x+ models | MUST |
 | REQ-19.6 | Fallback chain for Gemini-primary agents: `google/gemini-2.5-pro-preview` → `google/gemini-2-flash-preview` → `anthropic/claude-opus-4-6` | SHOULD |
 
+### REQ-20: kubectl Access for ocl-* Scripts
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-20.1 | All `ocl-*` management scripts that invoke `kubectl` MUST export `KUBECONFIG="${HOME}/.kube/config"` — k3s kubectl defaults to `/etc/rancher/k3s/k3s.yaml` (root-only, mode 600) which silently fails for non-root users | MUST |
+| REQ-20.2 | Affected scripts: `ocl-health`, `ocl-upgrade`, `ocl-restart`, `ocl-start`, `ocl-pause`, `ocl-resume`, `ocl-enable`, `ocl-unlock`, `ocl-nuke` | MUST |
+| REQ-20.3 | The user kubeconfig at `~/.kube/config` is written by the wizard during k3s install (`--write-kubeconfig-mode 644` or copy to home dir) and is the canonical kubectl config for the `ocl` user | MUST |
+
 ---
 
 ## 3. Architecture Overview

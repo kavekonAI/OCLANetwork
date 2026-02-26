@@ -908,6 +908,31 @@ kubectl rollout restart deployment/gateway-home -n ocl-agents
 kubectl rollout status deployment/gateway-home -n ocl-agents
 ```
 
+### `ocl-health` / `ocl-restart` / `ocl-nuke` show "k3s not running" or "permission denied"
+
+**Symptom:** Running any `ocl-*` script that uses `kubectl` produces:
+
+```
+time="..." level=warning msg="Unable to read /etc/rancher/k3s/k3s.yaml ..."
+error: error loading config file "/etc/rancher/k3s/k3s.yaml": permission denied
+```
+
+Even though `systemctl is-active k3s` returns `active`.
+
+**Cause:** The k3s `kubectl` binary defaults to `/etc/rancher/k3s/k3s.yaml` (owned by root, mode 600) when no `KUBECONFIG` env var is set. The user kubeconfig at `~/.kube/config` is not consulted unless `KUBECONFIG` is explicitly exported.
+
+**Fix:** All `ocl-*` scripts now set `export KUBECONFIG="${HOME}/.kube/config"` at the top. If you have an older install, update the scripts manually:
+
+```bash
+# Quick fix for all installed scripts
+for f in /home/ocl/ocl-deploy/scripts/ocl-{health,upgrade,restart,start,pause,resume,enable,unlock,nuke}; do
+  sed -i '2i\\# k3s kubectl fix\nexport KUBECONFIG="${HOME}/.kube/config"' "$f"
+done
+
+# Or re-run the wizard to reinstall all scripts fresh
+bash setup-wizard.sh
+```
+
 ### Resetting Everything
 
 ```bash
