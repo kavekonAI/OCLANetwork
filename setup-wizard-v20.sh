@@ -913,6 +913,9 @@ data:
     redis-cli -h localhost XGROUP CREATE ocl:results commander \$ MKSTREAM 2>/dev/null || true
     redis-cli -h localhost XGROUP CREATE ocl:system watchdog \$ MKSTREAM 2>/dev/null || true
     redis-cli -h localhost XGROUP CREATE ocl:approvals commander \$ MKSTREAM 2>/dev/null || true
+    # Seed log streams (no consumer groups — write-only append logs)
+    redis-cli -h localhost XADD ocl:dlp:log '*' event stream_init source wizard 2>/dev/null || true
+    redis-cli -h localhost XADD ocl:security:audit '*' event stream_init source wizard 2>/dev/null || true
     echo "Redis Streams initialized"
 ---
 apiVersion: apps/v1
