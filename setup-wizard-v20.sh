@@ -2450,9 +2450,8 @@ generate_openclaw_config() {
 
         [ "$first" = true ] && first=false || agents_json+=","
         # [L11] Use printf for cleaner JSON concatenation (no stray blank lines)
-        # [NF7] sandbox mode:off — agents run inside k3s pod; Docker not available in-container.
-        # Security is provided by NetworkPolicy + egress proxy rather than Docker sandbox.
-        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": [%s]\n      },\n      "sandbox": { "mode": "off" }'"${subagents_block}"'\n    }' "$id" "$id" "$id" "$model_str" "$fallbacks_str")
+        # [REQ-07.09] sandbox mode:ask — agents must request approval before running shell commands.
+        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": [%s]\n      },\n      "sandbox": { "mode": "ask" }'"${subagents_block}"'\n    }' "$id" "$id" "$id" "$model_str" "$fallbacks_str")
     done
     agents_json+=$'\n  ]'
 
@@ -2478,7 +2477,7 @@ generate_openclaw_config() {
   },
   "agents": {
     "defaults": {
-      "sandbox": { "mode": "off" },
+      "sandbox": { "mode": "ask" },
       "memorySearch": {
         "enabled": true,
         "provider": "gemini",
