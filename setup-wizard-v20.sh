@@ -1479,6 +1479,16 @@ spec:
             matchLabels: { kubernetes.io/metadata.name: ocl-agents }
       ports:
         - { port: 18789, protocol: TCP }
+    # Allow k8s API access for CronJobs (oauth-refresh, etc.)
+    # k8s API server is NOT a pod — needs ipBlock CIDR, not namespaceSelector
+    - to:
+        - ipBlock:
+            cidr: 10.43.0.1/32
+        - ipBlock:
+            cidr: 192.168.0.0/16
+      ports:
+        - { port: 443, protocol: TCP }
+        - { port: 6443, protocol: TCP }
 NPEOF
     kubectl apply -f "${K8S_DIR}/agent-network-policy.yaml" >/dev/null 2>&1
     ok "NetworkPolicy: agents locked to Proxy/LiteLLM/Redis only"
@@ -3862,7 +3872,7 @@ metadata:
   name: anthropic-oauth-refresh
   namespace: ocl-agents
 spec:
-  schedule: "0 */6 * * *"
+  schedule: "0 */4 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
@@ -3870,51 +3880,109 @@ spec:
     spec:
       template:
         spec:
-          restartPolicy: OnFailure
           serviceAccountName: oauth-refresh-sa
+          restartPolicy: OnFailure
           volumes:
-            - name: claude-creds
-              hostPath:
-                path: /home/ocl/.claude/.credentials.json
-                type: File
+          - name: claude-creds
+            hostPath:
+              path: /home/ocl/.claude/.credentials.json
+              type: File
           containers:
-            - name: refresh
-              image: alpine:3.19
-              command: [sh, -c]
-              args:
-                - |
-                  set -e
-                  apk add --no-cache -q python3 curl
-                  CREDS=/creds/.credentials.json
-                  ACCESS=$(python3 -c "import json; d=json.load(open('$CREDS')); print(d['claudeAiOauth']['accessToken'])")
-                  REFRESH=$(python3 -c "import json; d=json.load(open('$CREDS')); print(d['claudeAiOauth']['refreshToken'])")
-                  EXPIRES=$(python3 -c "import json; d=json.load(open('$CREDS')); print(d['claudeAiOauth']['expiresAt'])")
-                  NOW_MS=$(python3 -c "import time; print(int(time.time()*1000))")
-                  EXPIRES_IN=$(python3 -c "print(($EXPIRES - $NOW_MS) // 1000 // 60)")
-                  echo "Anthropic OAuth token expires in ${EXPIRES_IN} minutes"
-                  TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-                  API=https://kubernetes.default.svc
-                  A64=$(printf '%s' "$ACCESS"  | base64 -w0)
-                  R64=$(printf '%s' "$REFRESH" | base64 -w0)
-                  E64=$(printf '%s' "$EXPIRES" | base64 -w0)
-                  curl -sSk -X PATCH "$API/api/v1/namespaces/ocl-agents/secrets/anthropic-oauth" \
-                    -H "Authorization: Bearer $TOKEN" \
-                    -H "Content-Type: application/strategic-merge-patch+json" \
-                    -d "{\"data\":{\"ANTHROPIC_OAUTH_TOKEN\":\"$A64\",\"ANTHROPIC_REFRESH_TOKEN\":\"$R64\",\"ANTHROPIC_OAUTH_EXPIRES\":\"$E64\"}}"
-                  echo "Secret updated"
-                  TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-                  curl -sSk -X PATCH "$API/apis/apps/v1/namespaces/ocl-agents/deployments/gateway-home" \
-                    -H "Authorization: Bearer $TOKEN" \
-                    -H "Content-Type: application/strategic-merge-patch+json" \
-                    -d "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$TS\"}}}}}"
-                  echo "Gateway restart triggered"
-              volumeMounts:
-                - name: claude-creds
-                  mountPath: /creds/.credentials.json
-                  readOnly: true
+          - name: refresh
+            image: node:22-alpine
+            env:
+            - name: HTTPS_PROXY
+              value: "http://egress-proxy-service.ocl-services:8080"
+            - name: HTTP_PROXY
+              value: "http://egress-proxy-service.ocl-services:8080"
+            - name: NO_PROXY
+              value: "kubernetes.default.svc,kubernetes.default,10.0.0.0/8"
+            volumeMounts:
+            - name: claude-creds
+              mountPath: /creds/.credentials.json
+              readOnly: true
+            command: ["node", "-e"]
+            args:
+            - |
+              const fs = require('fs');
+              const https = require('https');
+
+              async function main() {
+                const creds = JSON.parse(fs.readFileSync('/creds/.credentials.json', 'utf8'));
+                const oauth = creds.claudeAiOauth;
+                const expiresIn = Math.floor((oauth.expiresAt - Date.now()) / 60000);
+                console.log(`[oauth-refresh] Token expires in ${expiresIn} minutes`);
+
+                let tokenToUse = oauth.accessToken;
+
+                if (expiresIn < 120) {
+                  console.log('[oauth-refresh] Token expiring soon, refreshing via console.anthropic.com');
+                  try {
+                    const body = `grant_type=refresh_token&refresh_token=${encodeURIComponent(oauth.refreshToken)}`;
+                    const resp = await fetch('https://console.anthropic.com/v1/oauth/token', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                      body
+                    });
+                    if (resp.ok) {
+                      const data = await resp.json();
+                      if (data.access_token) {
+                        tokenToUse = data.access_token;
+                        console.log('[oauth-refresh] Got fresh access token');
+                      } else {
+                        console.log('[oauth-refresh] No access_token in response');
+                      }
+                    } else {
+                      console.log(`[oauth-refresh] Refresh HTTP ${resp.status}: ${await resp.text()}`);
+                    }
+                  } catch (e) {
+                    console.log(`[oauth-refresh] Refresh error: ${e.message}`);
+                  }
+                } else {
+                  console.log('[oauth-refresh] Token still valid (>2h), syncing to secret');
+                }
+
+                const saToken = fs.readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/token', 'utf8');
+                const a64 = Buffer.from(tokenToUse).toString('base64');
+
+                await k8sPatch('/api/v1/namespaces/ocl-agents/secrets/anthropic-oauth',
+                  JSON.stringify({ data: { ANTHROPIC_OAUTH_TOKEN: a64 } }), saToken);
+                console.log('[oauth-refresh] Secret updated');
+
+                const ts = new Date().toISOString();
+                await k8sPatch('/apis/apps/v1/namespaces/ocl-agents/deployments/gateway-home',
+                  JSON.stringify({ spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': ts } } } } }), saToken);
+                console.log(`[oauth-refresh] Gateway restart triggered at ${ts}`);
+              }
+
+              function k8sPatch(path, body, token) {
+                return new Promise((resolve, reject) => {
+                  const req = https.request({
+                    hostname: 'kubernetes.default.svc',
+                    port: 443,
+                    path,
+                    method: 'PATCH',
+                    headers: {
+                      'Authorization': `Bearer ${token}`,
+                      'Content-Type': 'application/strategic-merge-patch+json',
+                      'Content-Length': Buffer.byteLength(body)
+                    },
+                    rejectUnauthorized: false
+                  }, res => {
+                    let d = '';
+                    res.on('data', c => d += c);
+                    res.on('end', () => { if (res.statusCode >= 400) console.log(`[k8s] ${res.statusCode}: ${d.substring(0,200)}`); resolve(d); });
+                  });
+                  req.on('error', reject);
+                  req.write(body);
+                  req.end();
+                });
+              }
+
+              main().catch(e => { console.error(e); process.exit(1); });
 ANTHEOF
 
-    ok "anthropic-oauth-refresh CronJob deployed (every 6h)"
+    ok "anthropic-oauth-refresh CronJob deployed (every 4h)"
 
     # ── OpenAI Codex OAuth refresh CronJob (only if Codex OAuth is active) ──
     if [ "${HAS_CODEX_OAUTH:-false}" = "true" ]; then
