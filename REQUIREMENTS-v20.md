@@ -356,6 +356,15 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-21.2 | openclaw enforces spawn allowlists per-agent: the `agents_list` tool returns only agents the caller is permitted to spawn; `sessions_spawn` rejects unlisted targets with "agentId is not allowed for sessions_spawn" | MUST |
 | REQ-21.3 | Gemini-primary agents (`researcher`, `watchdog`) MUST have `google/gemini-3-flash-preview` as their first fallback so quota exhaustion on Pro silently degrades to Flash rather than crossing provider boundaries | SHOULD |
 
+### REQ-22: NAS Pod Access & Agent Memory Search
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-22.1 | The gateway Deployment NAS volumeMount MUST set `mountPropagation: HostToContainer` — without it the container bind-mount captures the empty host mount point (mode `0000`) instead of the NFS filesystem, causing EACCES for all NAS access inside pods | MUST |
+| REQ-22.2 | The Synology NFS export for `openclaw-data` MUST be configured with **Squash = No squash** — the default "Root squash" blocks all non-root UIDs (uid=1000) at the NFS protocol level regardless of directory permissions | MUST |
+| REQ-22.3 | All agents MUST have `agents.defaults.memorySearch` configured with `provider: "gemini"` to enable semantic memory search across conversation history and stored memories | MUST |
+| REQ-22.4 | The local SSD fallback at `/home/ocl-local/agents/` (owned by uid=1000) provides writable scratch space for agents when NAS is unavailable; the `ocl-nas-sync` CronJob (running as root) syncs it to the NAS | SHOULD |
+
 ---
 
 ## 3. Architecture Overview

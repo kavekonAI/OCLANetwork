@@ -138,6 +138,10 @@ sudo visudo
 
 **IMPORTANT — NAS Permissions (v16):** The wizard now sets `/mnt/nas/agents` ownership to UID 1000 (the `node` user inside gateway pods). If you've previously created NAS directories manually, run: `sudo chown -R 1000:1000 /mnt/nas/agents`
 
+**IMPORTANT — Synology NFS Squash Setting:** The Synology NFS export MUST be set to **"No squash"** for agent pods (uid=1000) to write to the NAS. The default "Root squash" setting only allows uid=0 (root) through — all other UIDs are blocked at the NFS protocol level regardless of directory permissions. To fix: DSM → Control Panel → File Services → NFS → Edit the `openclaw-data` export → set **Squash** to **No squash**.
+
+**IMPORTANT — NAS Mount Propagation:** The gateway Deployment uses `mountPropagation: HostToContainer` on the NAS volume mount. Without this, containers see the empty mount point directory (mode `0000`) instead of the NFS filesystem mounted on the host — all NAS access from inside pods will fail with EACCES.
+
 If you have existing Docker, Kubernetes, or container runtimes:
 
 ```bash
@@ -766,6 +770,30 @@ showmount -e YOUR_NAS_IP
 sudo mount -t nfs -o nfsvers=4.1 YOUR_NAS_IP:/volume1/openclaw-data /mnt/nas
 # If this fails: enable NFSv4.1 on Synology → Control Panel → File Services → NFS
 ```
+
+### Agent reports "NAS storage not mounted" / Permission denied inside pod
+
+**Symptom:** Agent self-diagnostic says NAS is not available. From inside the pod: `ls /mnt/nas/agents/researcher/` returns `Permission denied` even though `ocl-health` shows `NAS: Mounted ✅` on the host.
+
+**Two separate root causes — both must be fixed:**
+
+**Cause 1 — Missing `mountPropagation`:** The NAS hostPath volume mount is missing `mountPropagation: HostToContainer`. Without it, the container bind-mount captures the underlying mount point directory (mode `0000`, owned by root) rather than the NFS filesystem on top of it. The wizard now sets this automatically, but older deployments need a patch:
+
+```bash
+kubectl patch deployment gateway-home -n ocl-agents --type=json -p='[{
+  "op": "replace",
+  "path": "/spec/template/spec/containers/0/volumeMounts/2",
+  "value": {"mountPath":"/mnt/nas","name":"nas","mountPropagation":"HostToContainer"}
+}]'
+kubectl rollout status deployment/gateway-home -n ocl-agents --timeout=90s
+```
+
+**Cause 2 — Synology NFS squash:** The Synology NFS export squash setting blocks non-root UIDs at the protocol level. Even with 0777 directory permissions, uid=1000 (the `node` user in gateway pods) gets EACCES while uid=0 (root) succeeds.
+
+**Fix:** On the Synology NAS:
+> DSM → Control Panel → File Services → NFS → Edit the `openclaw-data` export → set **Squash** to **No squash**
+
+After changing the Synology setting, no pod restart is needed — the NFS kernel client will pick it up immediately.
 
 ### "At least one API provider is required"
 
