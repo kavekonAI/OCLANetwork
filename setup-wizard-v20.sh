@@ -3871,6 +3871,46 @@ verify_and_cleanup() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════
+# .ENV EXAMPLE GENERATOR
+# ═══════════════════════════════════════════════════════════════════════
+
+generate_env_example() {
+    local dest="${1:-.env.example}"
+    cat > "$dest" << 'ENVEOF'
+# OCL Setup Wizard — Unattended Mode Configuration Template
+# Usage: bash setup-wizard-v20.sh --env /path/to/.env
+#
+# ─── REQUIRED: At least one LLM API key ───────────────────────────────
+ANTHROPIC_API_KEY=sk-ant-...
+# OPENAI_API_KEY=sk-...
+# GOOGLE_API_KEY=AIza...
+# DEEPSEEK_API_KEY=sk-...
+
+# ─── REQUIRED: NAS (Synology or compatible) ───────────────────────────
+NAS_IP=192.168.1.x
+# NAS_PATH=/volume1/openclaw-data   # optional — this is the default
+
+# ─── REQUIRED: Telegram ───────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN=123456789:AAB...
+TELEGRAM_GROUP_ID=-100...
+# TELEGRAM_USER_ID=123456789        # optional — your personal Telegram ID
+#                                   # (enables DM allowlist for bot)
+
+# ─── REQUIRED: Agents to deploy ───────────────────────────────────────
+# Comma-separated list. commander, watchdog, token-audit are auto-added.
+# Available: content-creator, researcher, linkedin-mgr, librarian,
+#            quant-trader, market-data-fetcher
+AGENTS=content-creator,researcher,librarian
+
+# ─── OPTIONAL: Budget & tier ──────────────────────────────────────────
+# MONTHLY_BUDGET=300                # USD per month across all agents (default: 300)
+# GATEWAY_TIER=home                 # home | cloud | gpu (default: home)
+# OPTIMIZER_ENABLED=false           # true requires 16 GB+ RAM (default: false)
+ENVEOF
+    echo "Generated: $dest"
+}
+
+# ═══════════════════════════════════════════════════════════════════════
 # UNATTENDED HELPER FUNCTIONS (for --env mode)
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -4184,15 +4224,22 @@ main() {
                 if [[ $# -lt 2 || -z "${2:-}" ]]; then
                     echo -e "${RED}Error: --env requires a file path${NC}"
                     echo "Usage: bash setup-wizard.sh --env /path/to/.env"
+                    echo "       bash setup-wizard.sh --generate-env   # create .env.example template"
                     exit 1
                 fi
                 ENV_FILE="$2"
                 OCL_ENV_FILE_TRAP="$ENV_FILE"   # [HF2] Trap will shred this on ANY exit
                 shift 2
                 ;;
+            --generate-env)
+                generate_env_example ".env.example"
+                echo "Edit .env.example, then run: bash setup-wizard-v20.sh --env .env.example"
+                exit 0
+                ;;
             *)
                 echo -e "${RED}Unknown option: $1${NC}"
                 echo "Usage: bash setup-wizard.sh [--env /path/to/.env]"
+                echo "       bash setup-wizard.sh --generate-env   # create .env.example template"
                 exit 1
                 ;;
         esac
@@ -4258,7 +4305,7 @@ main() {
             echo -e "${RED}Missing required .env fields:${NC}"
             for m in "${missing[@]}"; do echo "  - $m"; done
             echo ""
-            echo "See .env.example for all required fields."
+            echo "Run 'bash setup-wizard-v20.sh --generate-env' to create a template."
             exit 1
         fi
 
