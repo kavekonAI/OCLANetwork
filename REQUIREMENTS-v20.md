@@ -361,9 +361,10 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | REQ-22.1 | The gateway Deployment NAS volumeMount MUST set `mountPropagation: HostToContainer` — without it the container bind-mount captures the empty host mount point (mode `0000`) instead of the NFS filesystem, causing EACCES for all NAS access inside pods | MUST |
-| REQ-22.2 | The Synology NFS export for `openclaw-data` MUST be configured with **Squash = No squash** — the default "Root squash" blocks all non-root UIDs (uid=1000) at the NFS protocol level regardless of directory permissions | MUST |
+| REQ-22.2 | Synology NFS squash MUST be set to **"No mapping"** (Synology's label for no-squash — UIDs pass through unchanged). Root squash blocks uid=1000 at the protocol level. Note: even with "No mapping", Synology NFSv4 ACLs can still block uid=1000 — the nas-chmod initContainer (REQ-22.5) is the authoritative fix | MUST |
 | REQ-22.3 | All agents MUST have `agents.defaults.memorySearch` configured with `provider: "gemini"` to enable semantic memory search across conversation history and stored memories | MUST |
 | REQ-22.4 | The local SSD fallback at `/home/ocl-local/agents/` (owned by uid=1000) provides writable scratch space for agents when NAS is unavailable; the `ocl-nas-sync` CronJob (running as root) syncs it to the NAS | SHOULD |
+| REQ-22.5 | The gateway Deployment MUST include a `nas-chmod` initContainer (runs as `runAsUser: 0`) that executes `chmod a+rx /mnt/nas` before the main container starts — this resets any Synology NFSv4 ACL restrictions that would otherwise block uid=1000. The pod-level `runAsNonRoot: true` must be omitted to allow the init container to run as root; the main container still runs as `runAsUser: 1000` | MUST |
 
 ---
 

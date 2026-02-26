@@ -138,7 +138,7 @@ sudo visudo
 
 **IMPORTANT — NAS Permissions (v16):** The wizard now sets `/mnt/nas/agents` ownership to UID 1000 (the `node` user inside gateway pods). If you've previously created NAS directories manually, run: `sudo chown -R 1000:1000 /mnt/nas/agents`
 
-**IMPORTANT — Synology NFS Squash Setting:** The Synology NFS export MUST be set to **"No squash"** for agent pods (uid=1000) to write to the NAS. The default "Root squash" setting only allows uid=0 (root) through — all other UIDs are blocked at the NFS protocol level regardless of directory permissions. To fix: DSM → Control Panel → File Services → NFS → Edit the `openclaw-data` export → set **Squash** to **No squash**.
+**IMPORTANT — Synology NFS Squash Setting:** The Synology NFS export squash must be set to **"No mapping"** (Synology's label for no-squash — UIDs pass through unchanged without any mapping). Synology DSM does not show a literal "No squash" option; "No mapping" is the equivalent. Root squash or "Map all users to admin" blocks uid=1000 at the protocol level. To verify: DSM → Control Panel → File Services → NFS → Edit the `openclaw-data` export → confirm **Squash** is **No mapping**. Note: even with "No mapping", Synology NFSv4 ACLs can still deny uid=1000 — the `nas-chmod` initContainer in the gateway Deployment is the authoritative fix (runs `chmod a+rx /mnt/nas` as root at pod startup).
 
 **IMPORTANT — NAS Mount Propagation:** The gateway Deployment uses `mountPropagation: HostToContainer` on the NAS volume mount. Without this, containers see the empty mount point directory (mode `0000`) instead of the NFS filesystem mounted on the host — all NAS access from inside pods will fail with EACCES.
 
@@ -788,12 +788,61 @@ kubectl patch deployment gateway-home -n ocl-agents --type=json -p='[{
 kubectl rollout status deployment/gateway-home -n ocl-agents --timeout=90s
 ```
 
-**Cause 2 — Synology NFS squash:** The Synology NFS export squash setting blocks non-root UIDs at the protocol level. Even with 0777 directory permissions, uid=1000 (the `node` user in gateway pods) gets EACCES while uid=0 (root) succeeds.
+**Cause 2 — Synology NFSv4 ACLs:** Even with the squash set to "No mapping" (= no squash, UIDs pass through), Synology NFSv4 ACLs can deny uid=1000 at the protocol level while allowing uid=0. This is a Synology-specific ACL layer on top of the standard Unix permission model — directory `chmod 777` does not override it.
 
-**Fix:** On the Synology NAS:
-> DSM → Control Panel → File Services → NFS → Edit the `openclaw-data` export → set **Squash** to **No squash**
+**Fix:** The gateway Deployment includes a `nas-chmod` initContainer that runs as root before the main container and executes `chmod a+rx /mnt/nas`. This resets the ACL restriction on every pod startup so that uid=1000 can access the mount.
 
-After changing the Synology setting, no pod restart is needed — the NFS kernel client will pick it up immediately.
+If the initContainer is missing (older install), patch it in:
+
+```bash
+# Write the init-container patch script
+cat > /tmp/add-init-container.py << 'EOF'
+import json, sys, subprocess
+
+result = subprocess.run(
+    ['kubectl', 'get', 'deployment', 'gateway-home', '-n', 'ocl-agents', '-o', 'json',
+     '--kubeconfig', '/home/ocl/.kube/config'],
+    capture_output=True, text=True
+)
+obj = json.loads(result.stdout)
+spec = obj['spec']['template']['spec']
+
+image = spec['containers'][0]['image']
+
+# Remove pod-level runAsNonRoot (blocks init container running as root)
+if 'securityContext' in spec:
+    spec['securityContext'].pop('runAsNonRoot', None)
+
+init = {
+    'name': 'nas-chmod',
+    'image': image,
+    'command': ['sh', '-c', 'chmod a+rx /mnt/nas || true'],
+    'securityContext': {'runAsUser': 0, 'allowPrivilegeEscalation': False},
+    'volumeMounts': [{'name': 'nas', 'mountPath': '/mnt/nas', 'mountPropagation': 'HostToContainer'}]
+}
+
+existing = spec.get('initContainers', [])
+existing = [c for c in existing if c['name'] != 'nas-chmod']
+spec['initContainers'] = [init] + existing
+
+with open('/tmp/gw-with-init.json', 'w') as f:
+    json.dump(obj, f, indent=2)
+print("OK")
+EOF
+
+python3 /tmp/add-init-container.py 2>/dev/null
+kubectl apply --validate=false -f /tmp/gw-with-init.json
+kubectl rollout status deployment/gateway-home -n ocl-agents --timeout=120s
+```
+
+After the rollout, the initContainer log should show `chmod` succeeded:
+
+```bash
+kubectl logs -n ocl-agents \
+  $(kubectl get pod -n ocl-agents -l app=gateway-home -o name | head -1) \
+  -c nas-chmod
+# Expected: (empty — chmod ran silently) or "chmod: ..." warnings only
+```
 
 ### "At least one API provider is required"
 
