@@ -2466,7 +2466,7 @@ generate_openclaw_config() {
 {
   "gateway": {
     "mode": "local",
-    "bind": "lan",
+    "bind": "localhost",
     "port": 18789,
     "auth": {
       "mode": "token",
