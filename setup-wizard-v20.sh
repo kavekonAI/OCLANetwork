@@ -3993,7 +3993,7 @@ metadata:
   name: codex-oauth-refresh
   namespace: ocl-agents
 spec:
-  schedule: "30 */6 * * *"
+  schedule: "30 */4 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
@@ -4001,70 +4001,88 @@ spec:
     spec:
       template:
         spec:
-          restartPolicy: OnFailure
           serviceAccountName: oauth-refresh-sa
+          restartPolicy: OnFailure
           volumes:
-            - name: codex-auth
-              hostPath:
-                path: /home/ocl/.codex
-                type: Directory
-            - name: npm-global
-              hostPath:
-                path: /home/ocl/.npm-global
-                type: Directory
+          - name: codex-auth
+            hostPath:
+              path: /home/ocl/.codex
+              type: Directory
           containers:
-            - name: refresh
-              image: node:22-alpine
-              securityContext:
-                runAsUser: 0
-              command: [sh, -c]
-              args:
-                - |
-                  set -e
-                  apk add --no-cache -q python3 curl
-                  export HOME=/root
-                  export PATH="/mnt/npm-global/bin:$PATH"
-                  ln -sf /mnt/codex-auth /root/.codex
-                  codex login --refresh 2>/dev/null || true
-                  AUTH=/root/.codex/auth.json
-                  ACCESS=$(python3 -c "import json; d=json.load(open('$AUTH')); print(d['tokens']['access_token'])")
-                  REFRESH=$(python3 -c "import json; d=json.load(open('$AUTH')); print(d['tokens']['refresh_token'])")
-                  ACCOUNT=$(python3 -c "import json; d=json.load(open('$AUTH')); print(d['tokens']['account_id'])")
-                  EXPIRES=$(python3 -c "
-import json,base64
-d=json.load(open('$AUTH'))
-a=d['tokens']['access_token']
-p=a.split('.')[1]; p+='='*(4-len(p)%4)
-import json as j2; claims=j2.loads(base64.b64decode(p))
-print(claims['exp']*1000)")
-                  NOW_MS=$(python3 -c "import time; print(int(time.time()*1000))")
-                  EXPIRES_IN=$(python3 -c "print(($EXPIRES - $NOW_MS) // 1000 // 60)")
-                  echo "Codex OAuth token expires in ${EXPIRES_IN} minutes"
-                  TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-                  API=https://kubernetes.default.svc
-                  A64=$(printf '%s' "$ACCESS"  | base64 -w0)
-                  R64=$(printf '%s' "$REFRESH" | base64 -w0)
-                  AC64=$(printf '%s' "$ACCOUNT" | base64 -w0)
-                  E64=$(printf '%s' "$EXPIRES" | base64 -w0)
-                  curl -sSk -X PATCH "$API/api/v1/namespaces/ocl-agents/secrets/openai-codex-oauth" \
-                    -H "Authorization: Bearer $TOKEN" \
-                    -H "Content-Type: application/strategic-merge-patch+json" \
-                    -d "{\"data\":{\"OPENAI_CODEX_ACCESS_TOKEN\":\"$A64\",\"OPENAI_CODEX_REFRESH_TOKEN\":\"$R64\",\"OPENAI_CODEX_ACCOUNT_ID\":\"$AC64\",\"OPENAI_CODEX_EXPIRES\":\"$E64\"}}"
-                  echo "Codex secret updated"
-                  TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-                  curl -sSk -X PATCH "$API/apis/apps/v1/namespaces/ocl-agents/deployments/gateway-home" \
-                    -H "Authorization: Bearer $TOKEN" \
-                    -H "Content-Type: application/strategic-merge-patch+json" \
-                    -d "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$TS\"}}}}}"
-                  echo "Gateway restart triggered"
-              volumeMounts:
-                - name: codex-auth
-                  mountPath: /mnt/codex-auth
-                - name: npm-global
-                  mountPath: /mnt/npm-global
-                  readOnly: true
+          - name: refresh
+            image: node:22-alpine
+            env:
+            - name: NO_PROXY
+              value: "kubernetes.default.svc,kubernetes.default,10.0.0.0/8"
+            volumeMounts:
+            - name: codex-auth
+              mountPath: /mnt/codex-auth
+              readOnly: true
+            command: ["node", "-e"]
+            args:
+            - |
+              const fs = require('fs');
+              const https = require('https');
+
+              async function main() {
+                const auth = JSON.parse(fs.readFileSync('/mnt/codex-auth/auth.json', 'utf8'));
+                const tokens = auth.tokens;
+                const accessToken = tokens.access_token;
+                const refreshToken = tokens.refresh_token;
+                const accountId = tokens.account_id;
+
+                // Decode JWT to get expiry
+                const payload = accessToken.split('.')[1];
+                const padded = payload + '='.repeat((4 - payload.length % 4) % 4);
+                const claims = JSON.parse(Buffer.from(padded, 'base64').toString());
+                const expiresIn = Math.floor((claims.exp * 1000 - Date.now()) / 60000);
+                console.log(`[codex-refresh] Token expires in ${expiresIn} minutes`);
+
+                const saToken = fs.readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/token', 'utf8');
+                const data = {
+                  OPENAI_CODEX_ACCESS_TOKEN: Buffer.from(accessToken).toString('base64'),
+                  OPENAI_CODEX_REFRESH_TOKEN: Buffer.from(refreshToken).toString('base64'),
+                  OPENAI_CODEX_ACCOUNT_ID: Buffer.from(accountId).toString('base64'),
+                  OPENAI_CODEX_EXPIRES: Buffer.from(String(claims.exp * 1000)).toString('base64')
+                };
+
+                await k8sPatch('/api/v1/namespaces/ocl-agents/secrets/openai-codex-oauth',
+                  JSON.stringify({ data }), saToken);
+                console.log('[codex-refresh] Secret updated');
+
+                const ts = new Date().toISOString();
+                await k8sPatch('/apis/apps/v1/namespaces/ocl-agents/deployments/gateway-home',
+                  JSON.stringify({ spec: { template: { metadata: { annotations: { 'kubectl.kubernetes.io/restartedAt': ts } } } } }), saToken);
+                console.log(`[codex-refresh] Gateway restart triggered at ${ts}`);
+              }
+
+              function k8sPatch(path, body, token) {
+                return new Promise((resolve, reject) => {
+                  const req = https.request({
+                    hostname: 'kubernetes.default.svc',
+                    port: 443,
+                    path,
+                    method: 'PATCH',
+                    headers: {
+                      'Authorization': `Bearer ${token}`,
+                      'Content-Type': 'application/strategic-merge-patch+json',
+                      'Content-Length': Buffer.byteLength(body)
+                    },
+                    rejectUnauthorized: false
+                  }, res => {
+                    let d = '';
+                    res.on('data', c => d += c);
+                    res.on('end', () => { if (res.statusCode >= 400) console.log(`[k8s] ${res.statusCode}: ${d.substring(0,200)}`); resolve(d); });
+                  });
+                  req.on('error', reject);
+                  req.write(body);
+                  req.end();
+                });
+              }
+
+              main().catch(e => { console.error(e); process.exit(1); });
 CODEXEOF
-        ok "codex-oauth-refresh CronJob deployed (every 6h, offset 30m)"
+        ok "codex-oauth-refresh CronJob deployed (every 4h, offset 30m)"
     fi
 
     # ── Remove legacy host crontab entries if present ──────────────────
