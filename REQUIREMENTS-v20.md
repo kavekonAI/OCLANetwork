@@ -315,6 +315,20 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-16.7 | Local SSD buffer is NOT wiped by `ocl-nuke` — data preserved until NAS sync confirms | MUST |
 | REQ-16.8 | `ocl-nas-sync` checks local SSD disk usage — alerts via Redis + Telegram if ≥90% full | MUST |
 
+### REQ-18: Provider Identity Badges & Cross-Session Memory
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-18.1 | Every agent Telegram message MUST end with a provider identity signature on the last line | MUST |
+| REQ-18.2 | Signature format: `_<emoji> <model-short>_` (Telegram italic) — e.g. `_🟠 Opus 4.6_` | MUST |
+| REQ-18.3 | Provider logo emojis: 🟠 Anthropic · 🟢 OpenAI · ✨ Gemini · 🦙 Ollama (local) | MUST |
+| REQ-18.4 | When agent runs on its fallback chain (not primary model): append `⚡` — e.g. `_🟠 Opus 4.6 ⚡_` | MUST |
+| REQ-18.5 | Badge is substituted per-agent at SOUL generation time based on the agent's configured primary model | MUST |
+| REQ-18.6 | SOUL files MUST be written to workspace directory (`workspace-{agent}/SOUL.md`); gateway startup script copies ConfigMap souls to workspace dirs on every pod start | MUST |
+| REQ-18.7 | Agent SOULs include `CONVERSATION_MEMORY_PROTOCOL`: after each exchange, save 1–2 sentence summary to Redis stream `ocl:conversation:{agent}:memory` (XTRIM to 50 entries) | MUST |
+| REQ-18.8 | On every startup, agents restore last 10 conversation summaries from Redis and briefly acknowledge in first response if context exists | SHOULD |
+| REQ-18.9 | `get_model_emoji()` and `get_model_short_name()` bash helper functions in wizard map model strings to display names — used by `generate_soul()` at deployment time | MUST |
+
 ---
 
 ## 3. Architecture Overview

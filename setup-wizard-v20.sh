@@ -2582,10 +2582,19 @@ spec:
               cp /config/openclaw.json /home/node/.openclaw/openclaw.json
               cp /souls/*.md /home/node/.openclaw/ 2>/dev/null || true
               # Copy souls to workspace dirs — openclaw reads workspace-{agent}/SOUL.md not top-level
+              # Also seed workspace-state.json so openclaw skips the BOOTSTRAP onboarding flow
+              # (workspace is ephemeral; without this, agents enter "new agent setup" on every pod restart)
+              BOOT_TS=\$(node -e "process.stdout.write(new Date().toISOString())")
               for SOUL_FILE in /souls/*.md; do
                 AGENT_ID=\$(basename "\$SOUL_FILE" .md)
-                mkdir -p "/home/node/.openclaw/workspace-\${AGENT_ID}"
-                cp "\$SOUL_FILE" "/home/node/.openclaw/workspace-\${AGENT_ID}/SOUL.md"
+                WS_DIR="/home/node/.openclaw/workspace-\${AGENT_ID}"
+                mkdir -p "\${WS_DIR}/.openclaw"
+                cp "\$SOUL_FILE" "\${WS_DIR}/SOUL.md"
+                # Pre-seed workspace-state so openclaw treats this as an already-onboarded agent
+                if [ ! -f "\${WS_DIR}/.openclaw/workspace-state.json" ]; then
+                  printf '{"version":1,"bootstrapSeededAt":"%s","onboardingCompletedAt":"%s"}\n' \
+                    "\$BOOT_TS" "\$BOOT_TS" > "\${WS_DIR}/.openclaw/workspace-state.json"
+                fi
               done
               # [NF6] Write auth-profiles.json for each agent from mounted secrets.
               # openclaw looks for auth-profiles.json per-agent; without it all model calls fail.

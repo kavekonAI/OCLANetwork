@@ -654,7 +654,9 @@ The wizard guides you through 10 steps. Here's what to expect at each one:
 - Takes 1–3 minutes
 
 **Step 8 — Gateway & Agent Deployment** (automatic)
-- Generates SOUL files for each agent with the Universal Recovery Protocol
+- Generates SOUL files for each agent with the Universal Recovery Protocol, Provider Identity Badge, and Conversation Memory Protocol
+- Each SOUL is substituted with the agent's primary model emoji and short name (e.g. `_🟠 Opus 4.6_`)
+- Gateway startup script copies SOUL files to `workspace-{agent}/SOUL.md` — the path openclaw actually reads
 - Deploys the gateway pod with all agents
 - Takes 1–2 minutes
 
@@ -707,6 +709,20 @@ kubectl exec -n ocl-services deploy/redis -- redis-cli HGETALL "ocl:nas:sync"
 
 # Send a test task via Telegram
 # (message your bot with a command — Commander picks it up)
+
+# Verify workspace SOULs were loaded for all agents (badge protocol present)
+kubectl exec -n ocl-agents deploy/gateway-home -- sh -c '
+for a in commander watchdog token-audit content-creator researcher linkedin-mgr librarian; do
+  grep -q "PROVIDER IDENTITY" /home/node/.openclaw/workspace-${a}/SOUL.md \
+    && echo "✅ ${a}" || echo "❌ ${a} — SOUL missing or badge absent"
+done'
+
+# Test provider badge on commander (expect footer: _🟠 Opus 4.6_ or similar)
+kubectl exec -n ocl-agents deploy/gateway-home -- \
+  node /host-openclaw/openclaw.mjs agent --agent commander \
+  --message "Quick test: what is 2+2?" \
+  --deliver --reply-channel telegram --reply-to <YOUR_TELEGRAM_USER_ID> \
+  --json --timeout 90 2>&1 | grep -o '"text":"[^"]*"' | tail -1
 ```
 
 ### Expected Pod Status
@@ -785,6 +801,48 @@ kubectl create job --from=cronjob/ocl-nas-sync manual-sync -n ocl-services
 mountpoint -q /mnt/nas && echo "NAS mounted" || echo "NAS offline"
 ```
 
+### Researcher agent stuck in task-recovery mode
+
+If the researcher responds "I need the task that was interrupted" instead of answering normally, it has found incomplete task state in Redis from a previous session.
+
+```bash
+# Clear researcher task state
+kubectl exec -n ocl-services deploy/redis -- \
+  redis-cli --scan --pattern "ocl:task-state:researcher:*" | \
+  xargs -r kubectl exec -n ocl-services deploy/redis -- redis-cli DEL
+
+# Also clear conversation memory if needed
+kubectl exec -n ocl-services deploy/redis -- \
+  redis-cli DEL "ocl:conversation:researcher:memory"
+
+# Verify cleared
+kubectl exec -n ocl-services deploy/redis -- \
+  redis-cli KEYS "ocl:task-state:researcher:*"
+# (should return empty)
+```
+
+### Agent badge not appearing in Telegram responses
+
+If responses are missing the `_🟠 Model Name_` footer:
+
+```bash
+# 1. Check workspace SOUL.md exists and has badge protocol
+kubectl exec -n ocl-agents deploy/gateway-home -- \
+  grep -A 5 "PROVIDER IDENTITY" /home/node/.openclaw/workspace-commander/SOUL.md
+
+# 2. If missing, workspace dirs were not created (pod started before fix)
+# Force a pod restart to re-run the startup soul-copy loop
+kubectl rollout restart deployment/gateway-home -n ocl-agents
+kubectl rollout status deployment/gateway-home -n ocl-agents
+
+# 3. Re-verify after restart
+kubectl exec -n ocl-agents deploy/gateway-home -- sh -c '
+for a in commander watchdog token-audit content-creator researcher linkedin-mgr librarian; do
+  grep -q "PROVIDER IDENTITY" /home/node/.openclaw/workspace-${a}/SOUL.md \
+    && echo "✅ ${a}" || echo "❌ ${a}"
+done'
+```
+
 ### Resetting Everything
 
 ```bash
@@ -823,6 +881,9 @@ bash setup-wizard.sh
 │                                                       │
 │  NAS STATUS: redis-cli HGETALL ocl:nas:sync          │
 │  JWT STATUS: redis-cli HGETALL ocl:jwt:rotation      │
+│  CONV MEM:   redis-cli XREVRANGE                     │
+│              ocl:conversation:<id>:memory + - COUNT 5│
+│  CLEAR TASK: redis-cli DEL ocl:task-state:<id>:*     │
 │                                                       │
 │  FILES:                                               │
 │    REQUIREMENTS.md        — Full spec                │
