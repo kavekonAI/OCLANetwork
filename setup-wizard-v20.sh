@@ -2964,6 +2964,8 @@ NUKEOF
     # ── ocl-health (with version verification) ──
     cat > "${SCRIPTS_DIR}/ocl-health" << 'HEALTHEOF'
 #!/bin/bash
+# k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
+export KUBECONFIG="${HOME}/.kube/config"
 OCL_STATE="${HOME}/.ocl-setup/state.yaml"
 
 echo "═══ OCL Agent Network Health ═══"
@@ -3022,6 +3024,8 @@ HEALTHEOF
 #!/bin/bash
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+# k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
+export KUBECONFIG="${HOME}/.kube/config"
 OCL_STATE="${HOME}/.ocl-setup/state.yaml"
 
 TARGET="${1:-}"
