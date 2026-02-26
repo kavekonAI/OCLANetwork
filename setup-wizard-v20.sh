@@ -2753,6 +2753,8 @@ deploy_management_tools() {
     # ── ocl-nuke (modular, with secure cleanup) ──
     cat > "${SCRIPTS_DIR}/ocl-nuke" << 'NUKEOF'
 #!/bin/bash
+# k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
+export KUBECONFIG="${HOME}/.kube/config"
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
@@ -3171,6 +3173,8 @@ UPGRADEEOF
     # ── ocl-pause (pause an agent — stops accepting new tasks) ──
     cat > "${SCRIPTS_DIR}/ocl-pause" << 'PAUSEEOF'
 #!/bin/bash
+# k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
+export KUBECONFIG="${HOME}/.kube/config"
 set -euo pipefail
 AGENT="${1:-}"
 if [ -z "$AGENT" ]; then
@@ -3191,6 +3195,8 @@ PAUSEEOF
     # ── ocl-resume (resume a paused agent) ──
     cat > "${SCRIPTS_DIR}/ocl-resume" << 'RESUMEEOF'
 #!/bin/bash
+# k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
+export KUBECONFIG="${HOME}/.kube/config"
 set -euo pipefail
 AGENT="${1:-}"
 if [ -z "$AGENT" ]; then
@@ -3211,6 +3217,8 @@ RESUMEEOF
     # ── ocl-restart (rolling restart of agent or gateway) ──
     cat > "${SCRIPTS_DIR}/ocl-restart" << 'RESTARTEOF'
 #!/bin/bash
+# k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
+export KUBECONFIG="${HOME}/.kube/config"
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 TARGET="${1:-}"
@@ -3257,6 +3265,8 @@ RESTARTEOF
     # ── ocl-start (re-deploy a previously nuked agent) ──
     cat > "${SCRIPTS_DIR}/ocl-start" << 'STARTEOF'
 #!/bin/bash
+# k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
+export KUBECONFIG="${HOME}/.kube/config"
 set -euo pipefail
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 AGENT="${2:-${1:-}}"
@@ -3290,6 +3300,8 @@ STARTEOF
     # ── ocl-enable (modular feature enablement — currently supports "optimizer") ──
     cat > "${SCRIPTS_DIR}/ocl-enable" << 'ENABLEEOF'
 #!/bin/bash
+# k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
+export KUBECONFIG="${HOME}/.kube/config"
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 FEATURE="${1:-}"
@@ -3371,6 +3383,8 @@ ENABLEEOF
     # ── ocl-unlock (force-unlock stuck upgrade locks) [BF9] ──
     cat > "${SCRIPTS_DIR}/ocl-unlock" << 'UNLOCKEOF'
 #!/bin/bash
+# k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
+export KUBECONFIG="${HOME}/.kube/config"
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
