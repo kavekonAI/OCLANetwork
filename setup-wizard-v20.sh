@@ -2613,6 +2613,7 @@ PROXY_INIT_EOF
               OPENAI_KEY=\$(cat /run/secrets/OPENAI_API_KEY 2>/dev/null || true)
               GOOGLE_KEY=\$(cat /run/secrets/GOOGLE_API_KEY 2>/dev/null || true)
               mkdir -p /home/node/.openclaw
+              chmod 700 /home/node/.openclaw
               cp /config/openclaw.json /home/node/.openclaw/openclaw.json
               cp /souls/*.md /home/node/.openclaw/ 2>/dev/null || true
               # Copy souls to workspace dirs — openclaw reads workspace-{agent}/SOUL.md not top-level
@@ -2665,6 +2666,8 @@ PROXY_INIT_EOF
               AUTH_JSON="\${AUTH_JSON}}}"
               for AGENT_ID in main commander watchdog token-audit content-creator researcher linkedin-mgr librarian; do
                 mkdir -p /home/node/.openclaw/agents/\${AGENT_ID}/agent
+                # sessions dir required by openclaw; missing dir causes CRITICAL in doctor
+                mkdir -p /home/node/.openclaw/agents/\${AGENT_ID}/sessions
                 printf '%s' "\${AUTH_JSON}" > /home/node/.openclaw/agents/\${AGENT_ID}/agent/auth-profiles.json
                 chmod 600 /home/node/.openclaw/agents/\${AGENT_ID}/agent/auth-profiles.json
               done
@@ -3584,6 +3587,74 @@ SVCEOF
 }
 
 # ═══════════════════════════════════════════════════════════════════════
+# OPENCLAW POST-INSTALL: AUTO-UPGRADE + DOCTOR + VERIFICATION
+# ═══════════════════════════════════════════════════════════════════════
+
+openclaw_post_install_check() {
+    echo ""
+    info "── OpenClaw post-install check ──"
+
+    # ── 1. Auto-upgrade: compare installed vs latest on npm ──────────────
+    local current_ver
+    current_ver=$(read_state "openclaw" | tr -d '"')
+    info "Checking for openclaw updates (pinned: ${current_ver})..."
+    local latest_ver
+    latest_ver=$(npm view openclaw@latest version 2>/dev/null | tr -d '[:space:]"' || echo "")
+
+    if [ -z "$latest_ver" ]; then
+        warn "Could not reach npm to check latest openclaw version — skipping upgrade check"
+    elif [ "$current_ver" = "$latest_ver" ]; then
+        ok "openclaw ${current_ver} is already the latest version ✓"
+    else
+        info "Upgrading openclaw: ${current_ver} → ${latest_ver}..."
+        if npm install -g "openclaw@${latest_ver}" >/dev/null 2>&1; then
+            # Update state pin
+            write_state "openclaw" "\"${latest_ver}\""
+            # Patch the running deployment's env var and roll the pod
+            kubectl set env deployment/gateway-home \
+                -n ocl-agents "OCL_PINNED_VERSION=${latest_ver}" >/dev/null 2>&1 || true
+            kubectl rollout restart deployment/gateway-home -n ocl-agents >/dev/null 2>&1
+            info "Waiting for pod to restart with new version..."
+            kubectl rollout status deployment/gateway-home \
+                -n ocl-agents --timeout=120s >/dev/null 2>&1 || true
+            ok "openclaw upgraded to ${latest_ver} ✓"
+        else
+            warn "openclaw upgrade failed — continuing with ${current_ver}"
+        fi
+    fi
+
+    # ── 2. openclaw doctor --fix: session dirs, permissions, Telegram ────
+    info "Running openclaw doctor --fix..."
+    kubectl exec -n ocl-agents deploy/gateway-home -- \
+        node /host-openclaw/openclaw.mjs doctor --fix 2>/dev/null \
+        | grep -E "CRITICAL|ERROR|fixed|ok|complete" | sed 's/^/    /' || true
+    ok "openclaw doctor --fix applied ✓"
+
+    # ── 3. Verify memorySearch is active in running config ───────────────
+    local ms_enabled
+    ms_enabled=$(kubectl exec -n ocl-agents deploy/gateway-home -- \
+        node -e "try{const c=JSON.parse(require('fs').readFileSync('/home/node/.openclaw/openclaw.json'));
+                 console.log(c.agents?.defaults?.memorySearch?.enabled===true?'true':'false');}
+                 catch(e){console.log('false');}" 2>/dev/null || echo "false")
+    if [ "$ms_enabled" = "true" ]; then
+        ok "Memory search: enabled (provider=gemini) ✓"
+    else
+        warn "Memory search: not active — check agents.defaults.memorySearch in ConfigMap"
+    fi
+
+    # ── 4. Skills summary (informational — optional integrations) ────────
+    local eligible missing
+    eligible=$(kubectl exec -n ocl-agents deploy/gateway-home -- \
+        node /host-openclaw/openclaw.mjs doctor 2>/dev/null \
+        | grep "Eligible:" | grep -oP '\d+' | head -1 || echo "?")
+    missing=$(kubectl exec -n ocl-agents deploy/gateway-home -- \
+        node /host-openclaw/openclaw.mjs doctor 2>/dev/null \
+        | grep "Missing requirements:" | grep -oP '\d+' | head -1 || echo "?")
+    info "Skills: ${eligible} eligible, ${missing} need optional integrations (GitHub, Calendar, etc.)"
+    info "To enable more skills: run 'openclaw skills' inside the gateway pod"
+}
+
+# ═══════════════════════════════════════════════════════════════════════
 # STEP 10 — VERIFY + SECURE POST-INSTALL CLEANUP
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -3631,6 +3702,9 @@ verify_and_cleanup() {
     echo -e "  ${BOLD}Pod Status:${NC}"
     kubectl get pods -n ocl-services --no-headers 2>/dev/null | sed 's/^/    /'
     kubectl get pods -n ocl-agents --no-headers 2>/dev/null | sed 's/^/    /'
+
+    # ── OpenClaw post-install: auto-upgrade + doctor + verification ──────
+    openclaw_post_install_check
 
     # ── Secure post-install cleanup [Gap C] ──
     echo ""
