@@ -933,6 +933,36 @@ done
 bash setup-wizard.sh
 ```
 
+### Commander can only spawn itself — `agents_list` returns only `commander`
+
+**Symptom:** Commander reports it can only delegate to itself. `agents_list` tool shows only `["commander"]` even though all 7 agents are configured in the gateway.
+
+**Cause:** openclaw enforces per-agent spawn allowlists via `subagents.allowAgents` in the agent config. When the field is absent or empty, openclaw always adds the calling agent's own ID to the allowed set — but nothing else. The `sessions_spawn` tool will reject any other `agentId` with:
+
+```
+agentId is not allowed for sessions_spawn (allowed: none)
+```
+
+**Fix:** Add `subagents.allowAgents: ["*"]` to the commander agent entry in the openclaw ConfigMap:
+
+```bash
+# Patch the live ConfigMap and restart
+kubectl get configmap openclaw-home-config -n ocl-agents -o json | python3 -c "
+import json, sys
+obj = json.load(sys.stdin)
+cfg = json.loads(obj['data']['openclaw.json'])
+for agent in cfg['agents']['list']:
+    if agent['id'] == 'commander':
+        agent.setdefault('subagents', {})['allowAgents'] = ['*']
+obj['data']['openclaw.json'] = json.dumps(cfg, indent=2)
+print(json.dumps(obj))
+" | kubectl apply --validate=false -f - && \
+kubectl rollout restart deployment/gateway-home -n ocl-agents && \
+kubectl rollout status deployment/gateway-home -n ocl-agents --timeout=90s
+```
+
+**Verify:** After restart, send commander `agents_list` — it should return all 7 agent IDs.
+
 ### Resetting Everything
 
 ```bash

@@ -348,6 +348,14 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-20.2 | Affected scripts: `ocl-health`, `ocl-upgrade`, `ocl-restart`, `ocl-start`, `ocl-pause`, `ocl-resume`, `ocl-enable`, `ocl-unlock`, `ocl-nuke` | MUST |
 | REQ-20.3 | The user kubeconfig at `~/.kube/config` is written by the wizard during k3s install (`--write-kubeconfig-mode 644` or copy to home dir) and is the canonical kubectl config for the `ocl` user | MUST |
 
+### REQ-21: Commander Sub-Agent Spawn Allowlist
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-21.1 | The `commander` agent MUST have `subagents.allowAgents: ["*"]` in its openclaw config entry — without this, `sessions_spawn` only allows an agent to spawn itself, making multi-agent delegation impossible | MUST |
+| REQ-21.2 | openclaw enforces spawn allowlists per-agent: the `agents_list` tool returns only agents the caller is permitted to spawn; `sessions_spawn` rejects unlisted targets with "agentId is not allowed for sessions_spawn" | MUST |
+| REQ-21.3 | Gemini-primary agents (`researcher`, `watchdog`) MUST have `google/gemini-3-flash-preview` as their first fallback so quota exhaustion on Pro silently degrades to Flash rather than crossing provider boundaries | SHOULD |
+
 ---
 
 ## 3. Architecture Overview
