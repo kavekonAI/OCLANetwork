@@ -1962,7 +1962,7 @@ get_agent_primary_model() {
     case $id in
         commander)           echo "anthropic/claude-opus-4-6" ;;
         quant-trader)        echo "anthropic/claude-opus-4-6" ;;
-        researcher)          echo "gemini/gemini-3.1-pro-preview" ;;
+        researcher)          echo "google/gemini-3.1-pro-preview" ;;
         token-audit)
             [ "${HAS_CODEX_OAUTH:-false}" = "true" ] \
                 && echo "openai-codex/gpt-5.3-codex" \
@@ -1971,7 +1971,7 @@ get_agent_primary_model() {
             if [ "${OPTIMIZER_ACTIVE:-true}" = "true" ]; then
                 echo "ollama/phi4-mini"
             elif [ "${HAS_GOOGLE:-false}" = "true" ]; then
-                echo "gemini/gemini-3.1-pro-preview"
+                echo "google/gemini-3.1-pro-preview"
             elif [ "${HAS_OPENAI:-false}" = "true" ]; then
                 echo "openai/gpt-4o-mini"
             else
@@ -1988,8 +1988,8 @@ get_model_display_name() {
         anthropic/claude-sonnet-4-5)    echo "Claude Sonnet 4.5" ;;
         anthropic/claude-haiku-4-5*)    echo "Claude Haiku 4.5" ;;
         openai-codex/gpt-5.3-codex)     echo "GPT-5.3 Codex" ;;
-        gemini/gemini-3.1-pro-preview)  echo "Gemini 3.1 Pro" ;;
-        gemini/gemini-2.5-flash)        echo "Gemini 2.5 Flash" ;;
+        google/gemini-3.1-pro-preview)  echo "Gemini 3.1 Pro" ;;
+        google/gemini-3-flash-preview)  echo "Gemini 3 Flash" ;;
         openai/gpt-4o)                  echo "GPT-4o" ;;
         openai/gpt-4o-mini)             echo "GPT-4o Mini" ;;
         ollama/phi4-mini)               echo "Phi-4 Mini (local)" ;;
@@ -2004,8 +2004,8 @@ get_model_short_name() {
         anthropic/claude-sonnet-4-5)    echo "Sonnet 4.5" ;;
         anthropic/claude-haiku-4-5*)    echo "Haiku 4.5" ;;
         openai-codex/gpt-5.3-codex)     echo "Codex 5.3" ;;
-        gemini/gemini-3.1-pro-preview)  echo "Gemini 3.1" ;;
-        gemini/gemini-2.5-flash)        echo "Gemini 2.5" ;;
+        google/gemini-3.1-pro-preview)  echo "Gemini 3.1" ;;
+        google/gemini-3-flash-preview)  echo "Gemini 3 Flash" ;;
         openai/gpt-4o)                  echo "GPT-4o" ;;
         openai/gpt-4o-mini)             echo "GPT-4o Mini" ;;
         ollama/phi4-mini)               echo "Phi-4" ;;
@@ -2411,7 +2411,7 @@ generate_openclaw_config() {
             claude-opus)     model_str="anthropic/claude-opus-4-6" ;;
             claude-sonnet)   model_str="anthropic/claude-sonnet-4-5" ;;
             codex-plus)      model_str="openai-codex/gpt-5.3-codex" ;;
-            gemini-research) model_str="gemini/gemini-3.1-pro-preview" ;;
+            gemini-research) model_str="google/gemini-3.1-pro-preview" ;;
             local-fast)
                 if [ "${OPTIMIZER_ACTIVE:-true}" = "true" ]; then
                     model_str="ollama/phi4-mini"
@@ -2419,7 +2419,7 @@ generate_openclaw_config() {
                     # [EF3] Direct Mode: smart fallback chain based on available keys
                     # Priority: Google (cheapest) → OpenAI → Anthropic (most expensive)
                     if [ "${HAS_GOOGLE:-false}" = "true" ]; then
-                        model_str="gemini/gemini-3.1-pro-preview"
+                        model_str="google/gemini-3.1-pro-preview"
                     elif [ "${HAS_OPENAI:-false}" = "true" ]; then
                         model_str="openai/gpt-4o-mini"
                     elif [ "${HAS_ANTHROPIC:-false}" = "true" ]; then
@@ -2436,8 +2436,8 @@ generate_openclaw_config() {
         # Avoid repeating the primary in fallbacks (e.g. opus primary → no opus fallback).
         local fallbacks_str
         case $model in
-            codex-plus)      fallbacks_str='"gemini/gemini-3.1-pro-preview","anthropic/claude-opus-4-6"' ;;
-            claude-opus)     fallbacks_str='"gemini/gemini-3.1-pro-preview","openai-codex/gpt-5.3-codex"' ;;
+            codex-plus)      fallbacks_str='"google/gemini-3.1-pro-preview","anthropic/claude-opus-4-6"' ;;
+            claude-opus)     fallbacks_str='"google/gemini-3.1-pro-preview","openai-codex/gpt-5.3-codex"' ;;
             gemini-research) fallbacks_str='"anthropic/claude-opus-4-6","openai-codex/gpt-5.3-codex"' ;;
             *)               fallbacks_str='"openai-codex/gpt-5.3-codex","anthropic/claude-opus-4-6"' ;;
         esac
@@ -2576,6 +2576,16 @@ spec:
             - |
               # [NF5] openclaw is pre-installed on the host and mounted via hostPath.
               # In-container npm install is not used: node:slim lacks git required by openclaw deps.
+              # Create proxy-init.js FIRST so NODE_OPTIONS --require works for all subsequent node calls.
+              cat > /tmp/proxy-init.js << 'PROXY_INIT_EOF'
+try {
+  const { EnvHttpProxyAgent, setGlobalDispatcher } = require('/host-openclaw/node_modules/undici');
+  if (process.env.HTTPS_PROXY || process.env.HTTP_PROXY) {
+    setGlobalDispatcher(new EnvHttpProxyAgent());
+    console.log('[proxy-init] undici EnvHttpProxyAgent active via', process.env.HTTPS_PROXY || process.env.HTTP_PROXY);
+  }
+} catch(e) { console.warn('[proxy-init] proxy setup failed:', e.message); }
+PROXY_INIT_EOF
               OPENAI_KEY=\$(cat /run/secrets/OPENAI_API_KEY 2>/dev/null || true)
               GOOGLE_KEY=\$(cat /run/secrets/GOOGLE_API_KEY 2>/dev/null || true)
               mkdir -p /home/node/.openclaw
@@ -2636,18 +2646,8 @@ spec:
               done
               echo "Auth profiles written for: anthropic, openai, openai-codex, google"
               echo "OpenClaw version: \$(node /host-openclaw/openclaw.mjs --version 2>/dev/null || echo \${OCL_PINNED_VERSION})"
-              # Install undici EnvHttpProxyAgent so all fetch() calls (Gemini, Anthropic, etc.)
-              # route through the egress proxy. Node 22 fetch ignores HTTPS_PROXY without this.
-              cat > /tmp/proxy-init.js << 'PROXY_INIT_EOF'
-try {
-  const { EnvHttpProxyAgent, setGlobalDispatcher } = require('/host-openclaw/node_modules/undici');
-  if (process.env.HTTPS_PROXY || process.env.HTTP_PROXY) {
-    setGlobalDispatcher(new EnvHttpProxyAgent());
-    console.log('[proxy-init] undici EnvHttpProxyAgent active via', process.env.HTTPS_PROXY || process.env.HTTP_PROXY);
-  }
-} catch(e) { console.warn('[proxy-init] proxy setup failed:', e.message); }
-PROXY_INIT_EOF
-              export NODE_OPTIONS="--require /tmp/proxy-init.js"
+              # proxy-init.js was already created at the start of this script.
+              # NODE_OPTIONS is set in the container env so all node processes use it automatically.
               exec node /host-openclaw/openclaw.mjs gateway --port 18789 --verbose
           ports: [{ containerPort: 18789 }]
           envFrom:
@@ -2699,6 +2699,11 @@ fi)
               value: "http://egress-proxy-service.ocl-services:8080"
             - name: NO_PROXY
               value: "redis-service.ocl-services,litellm-service.ocl-services,ollama-service.ocl-services,localhost,127.0.0.1,registry.npmjs.org"
+            # NODE_OPTIONS: load proxy-init.js so Node 22 fetch() routes through HTTPS_PROXY.
+            # Without this, @google/genai calls to Gemini bypass the egress proxy (NetworkPolicy blocks direct internet).
+            # proxy-init.js is written by the startup script before openclaw is exec'd.
+            - name: NODE_OPTIONS
+              value: "--require /tmp/proxy-init.js"
           volumeMounts:
             - { name: config, mountPath: /config }
             - { name: souls, mountPath: /souls }
