@@ -2778,6 +2778,10 @@ PROXY_INIT_EOF
             - name: LITELLM_MASTER_KEY
               valueFrom:
                 secretKeyRef: { name: llm-api-keys, key: LITELLM_MASTER_KEY, optional: true }
+            # GEMINI_API_KEY enables Gemini web_search grounding (auto-detected when BRAVE_API_KEY absent)
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: llm-api-keys, key: GOOGLE_API_KEY, optional: true }
 $(if [ "${OPTIMIZER_ACTIVE:-true}" = "true" ]; then cat << 'OPTENV'
             - name: OPENAI_API_BASE
               value: "http://litellm-service.ocl-services:4000"
