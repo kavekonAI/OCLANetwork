@@ -1692,6 +1692,167 @@ subjects: [{ kind: ServiceAccount, name: jwt-rotator-sa, namespace: ocl-services
 JWTEOF
     kubectl apply -f "${K8S_DIR}/jwt-rotator.yaml" >/dev/null 2>&1
     ok "JWT rotation CronJob (every 55 min — secrets auto-rotate + gateway restart)"
+
+    # Deploy dashboard (REQ-03)
+    deploy_dashboard
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# DASHBOARD — React + Express; NodePort 30780; Bearer-token auth [W1]
+# ═══════════════════════════════════════════════════════════════════════
+
+deploy_dashboard() {
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local dash_src="${script_dir}/dashboard"
+    local dash_host="${OCL_DEPLOY}/dashboard"
+
+    # Guard: dist must be pre-built and committed to repo
+    if [ ! -f "${dash_src}/dist/index.html" ]; then
+        warn "Dashboard dist/index.html not found — skipping dashboard deploy."
+        warn "Run: cd ${dash_src} && npm install && npm run build"
+        return 0
+    fi
+
+    progress_bar 1 1 "Dashboard (REQ-03)"
+
+    # Copy dashboard source to hostPath directory (idempotent)
+    rm -rf "${dash_host}"
+    cp -r "${dash_src}" "${dash_host}"
+
+    # Install server-only deps on host so pod can mount them
+    if [ -f "${dash_host}/package.server.json" ]; then
+        cp "${dash_host}/package.server.json" "${dash_host}/package.json"
+    fi
+    npm install --omit=dev --prefix "${dash_host}" --silent 2>/dev/null || \
+        npm install --omit=dev --prefix "${dash_host}" 2>/dev/null || true
+
+    # Generate 32-byte token
+    local dash_token
+    dash_token=$(openssl rand -hex 32)
+
+    # Apply Secret
+    kubectl create secret generic dashboard-token \
+        -n ocl-services \
+        --from-literal=DASHBOARD_TOKEN="${dash_token}" \
+        --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+
+    # Apply RBAC + Deployment + Service
+    cat <<DASHEOF | kubectl apply -f - >/dev/null 2>&1
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dashboard-sa
+  namespace: ocl-services
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dashboard-role
+  namespace: ocl-agents
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dashboard-binding
+  namespace: ocl-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dashboard-role
+subjects:
+  - kind: ServiceAccount
+    name: dashboard-sa
+    namespace: ocl-services
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: ocl-services
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      serviceAccountName: dashboard-sa
+      containers:
+        - name: dashboard
+          image: node:22-alpine
+          command: ["node", "/app/server.js"]
+          env:
+            - name: REDIS_URL
+              value: "redis://redis-service.ocl-services:6379"
+            - name: PORT
+              value: "3000"
+            - name: DASHBOARD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-token
+                  key: DASHBOARD_TOKEN
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          hostPath:
+            path: ${dash_host}
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard-service
+  namespace: ocl-services
+spec:
+  type: NodePort
+  selector:
+    app: dashboard
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30780
+DASHEOF
+
+    # Wait for rollout
+    kubectl rollout status deployment/dashboard -n ocl-services --timeout=90s >/dev/null 2>&1 || true
+
+    # Update state
+    sedi "s|dashboard: { deployed: false }|dashboard: { deployed: true }|" "${OCL_STATE}" 2>/dev/null || true
+
+    echo ""
+    ok "Dashboard deployed → http://$(hostname -I | awk '{print $1}'):30780"
+    info "Dashboard token: ${dash_token}"
+    info "(Also: kubectl get secret dashboard-token -n ocl-services -o jsonpath='{.data.DASHBOARD_TOKEN}' | base64 -d)"
+
+    # Zero out token var
+    dash_token=""
+    unset dash_token
 }
 
 # ═══════════════════════════════════════════════════════════════════════

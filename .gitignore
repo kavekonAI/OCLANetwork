@@ -1,2 +1,3 @@
 .kube/
 *.bak
+dashboard/node_modules/

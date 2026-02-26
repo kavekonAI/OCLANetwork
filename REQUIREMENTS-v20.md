@@ -45,17 +45,17 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| REQ-03.1 | Web-based dashboard accessible via Tailscale only | MUST |
-| REQ-03.2 | Real-time agent messages and task status from Redis | MUST |
-| REQ-03.3 | Agent health status via Redis heartbeats (online/offline/rate-limited/error) | MUST |
-| REQ-03.4 | Token usage graphs per agent and cumulative via LiteLLM API | MUST |
+| REQ-03.1 | Web-based dashboard accessible via Tailscale only; served on NodePort 30780; protected by Bearer token (32-byte hex, stored in k8s Secret `dashboard-token`) | MUST |
+| REQ-03.2 | Real-time via WebSocket + Redis XREAD BLOCK on ocl:security:audit and ocl:dlp:log; agent status polled every 15s | MUST |
+| REQ-03.3 | Agent list sourced from openclaw-home-config ConfigMap; status overlaid from ocl:heartbeat:* TTL and ocl:agent-status:* hash | MUST |
+| REQ-03.4 | Token usage graphs via LiteLLM API — **Phase 1 only** (panel hidden until LiteLLM detected at litellm-service:4000/health) | MUST |
 | REQ-03.5 | Task board view from Redis taskboard hashes | MUST |
 | REQ-03.6 | Cost tracking per agent and per provider | MUST |
 | REQ-03.7 | Log viewer with filtering by agent, severity, time | SHOULD |
 | REQ-03.8 | One-click actions: restart agent, pause agent, nuke agent | SHOULD |
 | REQ-03.9 | "High-Burn" leaderboard: Agent ID vs Daily Cost vs Token-to-Result ratio | MUST |
 | REQ-03.10 | Optimization recommendations: flag agents with avg prompt >10K tokens as "Needs Compression" | MUST |
-| REQ-03.11 | Cache hit rate display per agent; flag 0% cache-hit agents as "Redundant System Prompts" | MUST |
+| REQ-03.11 | Cache hit rate via LiteLLM — **Phase 1 only** (panel hidden until LiteLLM detected) | MUST |
 | REQ-03.12 | Provider tier status: show if agent is on primary (Claude Premium) or failed over to pay-as-you-go | MUST |
 | REQ-03.13 | Agent Efficiency Ratio: (tokens_out / tokens_in); flag ratio <0.1 as "Wasteful — Needs Prompt Compression" | MUST |
 | REQ-03.14 | Claude Premium Reset Countdown: live timer showing time until subscription limit resets | MUST |
@@ -64,10 +64,10 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-03.17 | Learnings & Knowledge Base tab: searchable list of all agent failures and fixes, categorized by agent type and error category | MUST |
 | REQ-03.18 | Learnings Promotion: one-click button to move an item from "What Didn't Work" to "Fixed" when an agent completes a previously failed task | MUST |
 | REQ-03.19 | Monetization Features view: curated list of "Fixed" items tagged for future product features or version upgrades | SHOULD |
-| REQ-03.20 | Agent Management Panel: per-agent controls — Pause, Resume, Restart, Nuke — with one-click buttons | MUST |
+| REQ-03.20 | Pause/Resume write ocl:agent-status:* in Redis; Restart patches gateway-home deployment via k8s API; Nuke archives to ALKB then clears ocl:agent-status:* and ocl:task-state:* (agents share gateway pod — no individual pod delete) | MUST |
 | REQ-03.21 | Node Management Panel: per-gateway controls — Restart All Agents, Nuke Gateway, Health Check — with one-click buttons | MUST |
 | REQ-03.22 | Agent status indicator: Running (green), Paused (yellow), Stopped (red), Rate-Limited (orange) for each agent | MUST |
-| REQ-03.23 | Confirmation dialog on destructive actions (Nuke) with ALKB archive status shown before execution | MUST |
+| REQ-03.23 | Confirmation requires typing 'NUKE <agent-id>'; dialog shows pending ALKB item count (SCARD ocl:learnings:by-status:pending-review) before input is accepted | MUST |
 
 ### REQ-04: Agent & Node Lifecycle Management
 
