@@ -329,6 +329,17 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-18.8 | On every startup, agents restore last 10 conversation summaries from Redis and briefly acknowledge in first response if context exists | SHOULD |
 | REQ-18.9 | `get_model_emoji()` and `get_model_short_name()` bash helper functions in wizard map model strings to display names — used by `generate_soul()` at deployment time | MUST |
 
+### REQ-19: Gemini API Egress
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-19.1 | Gemini model IDs MUST use `google/` provider prefix in openclaw config (NOT `gemini/`) — using `gemini/` causes "Unknown model" errors | MUST |
+| REQ-19.2 | All Node.js fetch() calls MUST route through the egress proxy via undici `EnvHttpProxyAgent` set as the global dispatcher | MUST |
+| REQ-19.3 | `proxy-init.js` MUST be created before any `node` invocations in the gateway startup script — the file is required by `NODE_OPTIONS` at process start | MUST |
+| REQ-19.4 | `NODE_OPTIONS='--require /tmp/proxy-init.js'` MUST be set in the container `env` section of the Kubernetes deployment spec (not only in the startup shell) so that all child node processes inherit it | MUST |
+| REQ-19.5 | Google API key MUST have billing enabled on the Google Cloud project — the free tier has a limit of 0 RPM for Gemini 2.x+ models | MUST |
+| REQ-19.6 | Fallback chain for Gemini-primary agents: `google/gemini-2.5-pro-preview` → `google/gemini-2-flash-preview` → `anthropic/claude-opus-4-6` | SHOULD |
+
 ---
 
 ## 3. Architecture Overview

@@ -389,6 +389,22 @@ Recommended tier: **Build** ($50–100/mo pre-paid credits)
 
 This is the cheapest option for system agents (Watchdog, Token Audit) in Direct Mode.
 
+**IMPORTANT — Billing Required for Gemini 2.x+ Models:**
+
+- You MUST enable billing on the Google Cloud project associated with the API key. The free tier has a quota of 0 RPM for Gemini 2.x and newer models — all requests will be rejected with a quota error until billing is active.
+- To enable billing: go to https://console.cloud.google.com/billing and link a billing account to your project.
+- `gemini-2.5-pro-preview` requires paid quota which may take **several hours to propagate** after billing is first enabled. During this propagation window, openclaw automatically falls back to `gemini-2-flash-preview`, which has immediate paid quota access.
+- There is no action needed on your part during the propagation period — the fallback chain handles it transparently.
+
+**Correct Gemini Model ID Format in openclaw:**
+
+openclaw (OpenClaw) uses the `google/` provider prefix for all Gemini models. Using the `gemini/` prefix causes "Unknown model" errors.
+
+| Correct | Wrong |
+|---------|-------|
+| `google/gemini-2.5-pro-preview` | `gemini/gemini-2.5-pro-preview` |
+| `google/gemini-2-flash-preview` | `gemini/gemini-2-flash-preview` |
+
 ### Step 6.4: DeepSeek (Optional)
 
 1. Go to https://platform.deepseek.com/
@@ -841,6 +857,55 @@ for a in commander watchdog token-audit content-creator researcher linkedin-mgr 
   grep -q "PROVIDER IDENTITY" /home/node/.openclaw/workspace-${a}/SOUL.md \
     && echo "✅ ${a}" || echo "❌ ${a}"
 done'
+```
+
+### Researcher/Watchdog falls back to Flash instead of Pro
+
+**Symptom:** The researcher or watchdog agent consistently uses `google/gemini-2-flash-preview` instead of `google/gemini-2.5-pro-preview`, even though Pro is configured as the primary model.
+
+**Cause:** `gemini-2.5-pro-preview` requires paid quota on your Google Cloud project. Quota changes can take several hours to propagate after billing is first enabled. During this window, all requests to the Pro model are rejected with a quota error, and openclaw falls back to Flash automatically.
+
+**Fix:** Wait several hours for billing quota to take effect. No configuration change is needed — the fallback chain handles it transparently. To verify when Pro becomes available:
+
+```bash
+# Run from inside the gateway pod
+kubectl exec -n ocl-agents deploy/gateway-home -- node - <<'EOF'
+import { GoogleGenAI } from "@google/genai";
+const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+const resp = await ai.models.generateContent({
+  model: "gemini-2.5-pro-preview",
+  contents: [{ role: "user", parts: [{ text: "reply ok" }] }],
+});
+console.log(resp.text ?? resp);
+EOF
+# If quota has propagated: prints "ok"
+# If still pending: prints quota error — wait longer
+```
+
+### Gemini calls time out / "Cannot find module /tmp/proxy-init.js"
+
+**Symptom:** Node.js processes inside the gateway pod fail at startup with `Cannot find module '/tmp/proxy-init.js'`, or Gemini API calls hang indefinitely without reaching the egress proxy.
+
+**Cause:** `NODE_OPTIONS='--require /tmp/proxy-init.js'` is set in the container environment, but `proxy-init.js` is created in the startup `args` script after some `node` invocations have already begun. Because `NODE_OPTIONS` is inherited by every Node.js process from the moment the container starts, the file must exist before any `node` command is executed.
+
+**Fix:** In the gateway deployment spec, ensure `proxy-init.js` is written as the very first action in the container `args` startup script, before any `node` call. The correct order is:
+
+```bash
+# 1. Create proxy-init.js FIRST (required by NODE_OPTIONS at process start)
+cat > /tmp/proxy-init.js <<'PROXYEOF'
+const { EnvHttpProxyAgent, setGlobalDispatcher } = require('undici');
+setGlobalDispatcher(new EnvHttpProxyAgent());
+PROXYEOF
+
+# 2. Only THEN start any node processes
+node /host-openclaw/openclaw.mjs ...
+```
+
+If the pod is already deployed with the wrong ordering, force a rollout restart after correcting the startup script:
+
+```bash
+kubectl rollout restart deployment/gateway-home -n ocl-agents
+kubectl rollout status deployment/gateway-home -n ocl-agents
 ```
 
 ### Resetting Everything
