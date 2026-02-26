@@ -3722,6 +3722,62 @@ openclaw_post_install_check() {
         | grep "Missing requirements:" | grep -oP '\d+' | head -1 || echo "?")
     info "Skills: ${eligible} eligible, ${missing} need optional integrations (GitHub, Calendar, etc.)"
     info "To enable more skills: run 'openclaw skills' inside the gateway pod"
+
+    # ── 5. Egress proxy whitelist audit ──────────────────────────────────
+    info "Verifying egress proxy whitelist..."
+    local required_domains=(
+        "api.anthropic.com"
+        "console.anthropic.com"
+        "api.telegram.org"
+        "core.telegram.org"
+        "generativelanguage.googleapis.com"
+        "aiplatform.googleapis.com"
+        "oauth2.googleapis.com"
+        "api.openai.com"
+        "registry.npmjs.org"
+    )
+    local missing_domains=()
+    for domain in "${required_domains[@]}"; do
+        local present
+        present=$(kubectl exec -n ocl-services deploy/redis -- \
+            redis-cli SISMEMBER ocl:egress:whitelist "$domain" 2>/dev/null || echo "0")
+        if [ "$present" != "1" ]; then
+            missing_domains+=("$domain")
+            warn "Egress whitelist missing: ${domain} — adding now"
+            kubectl exec -n ocl-services deploy/redis -- \
+                redis-cli SADD ocl:egress:whitelist "$domain" >/dev/null 2>&1 || true
+        fi
+    done
+    if [ ${#missing_domains[@]} -eq 0 ]; then
+        ok "Egress whitelist: all required domains present ✓"
+    else
+        ok "Egress whitelist: added ${#missing_domains[@]} missing domain(s): ${missing_domains[*]}"
+    fi
+
+    # Test live CONNECT tunnel to critical endpoints from inside pod
+    info "Testing egress proxy connectivity (CONNECT tunnels)..."
+    local test_hosts=("api.anthropic.com" "api.telegram.org" "core.telegram.org")
+    local proxy_ok=true
+    for host in "${test_hosts[@]}"; do
+        local result
+        result=$(kubectl exec -n ocl-agents deploy/gateway-home -- node -e "
+const net = require('net');
+const s = net.connect(8080, 'egress-proxy-service.ocl-services', () => {
+    s.write('CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n');
+});
+s.once('data', d => { process.stdout.write(d.toString().split('\r\n')[0]); s.destroy(); });
+s.on('error', e => { process.stdout.write('ERROR:' + e.message); });
+setTimeout(() => s.destroy(), 4000);
+" 2>/dev/null || echo "ERROR:timeout")
+        if echo "$result" | grep -q "200 Connection Established"; then
+            ok "  ${host}: CONNECT ✓"
+        else
+            warn "  ${host}: CONNECT FAILED (${result})"
+            proxy_ok=false
+        fi
+    done
+    [ "$proxy_ok" = "true" ] && ok "Egress proxy connectivity: all critical endpoints reachable ✓" \
+        || warn "Egress proxy: some endpoints unreachable — check Redis whitelist and network policy"
 }
 
 # ═══════════════════════════════════════════════════════════════════════
