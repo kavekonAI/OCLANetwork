@@ -2572,9 +2572,22 @@ spec:
     spec:
       automountServiceAccountToken: false
       securityContext:
-        runAsNonRoot: true
+        # runAsNonRoot omitted: initContainer runs as root to fix NAS mount permissions.
+        # Main container enforces uid=1000 via runAsUser below.
         runAsUser: 1000
         fsGroup: 1000
+      initContainers:
+        - name: nas-chmod
+          image: ${node_img}
+          # Runs as root to ensure NAS root dir is accessible by uid=1000.
+          # Synology NFSv4 ACLs can block the owner UID even on 0777 dirs;
+          # chmod a+rx from root bypasses the ACL restriction at mount time.
+          command: [sh, -c, "chmod a+rx /mnt/nas || true"]
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - { name: nas, mountPath: /mnt/nas, mountPropagation: HostToContainer }
       containers:
         - name: openclaw
           image: ${node_img}
