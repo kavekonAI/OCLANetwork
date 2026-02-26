@@ -612,18 +612,8 @@ setup_anthropic_oauth() {
     } | kubectl apply -f - >/dev/null 2>&1
     ok "anthropic-oauth secret created in ocl-agents"
 
-    # Install oauth-refresh.sh cron job (runs every 6h to keep token current)
-    local script_dir
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local refresh_script="${script_dir}/oauth-refresh.sh"
-    if [ -f "$refresh_script" ]; then
-        chmod 755 "$refresh_script"
-        local cron_entry="0 */6 * * * ${refresh_script} >> /var/log/oauth-refresh.log 2>&1"
-        # Add only if not already present
-        ( crontab -l 2>/dev/null | grep -qF "$refresh_script" ) \
-            || ( crontab -l 2>/dev/null; echo "$cron_entry" ) | crontab -
-        ok "OAuth token refresh cron job installed (every 6h)"
-    fi
+    # Token refresh is handled by the anthropic-oauth-refresh k8s CronJob
+    # deployed in deploy_oauth_refresh_cronjobs() (called from deploy_management_tools).
 
     # Clear tokens from shell memory
     access_tok=""; refresh_tok=""; expires_at=""
@@ -700,14 +690,8 @@ print(claims['exp']*1000)
 
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local refresh_script="${script_dir}/openai-codex-refresh.sh"
-    if [ -f "$refresh_script" ]; then
-        chmod 755 "$refresh_script"
-        local cron_entry="0 */6 * * * ${refresh_script} >> /var/log/openai-codex-refresh.log 2>&1"
-        ( crontab -l 2>/dev/null | grep -qF "$refresh_script" ) \
-            || ( crontab -l 2>/dev/null; echo "$cron_entry" ) | crontab -
-        ok "OpenAI Codex token refresh cron job installed (every 6h)"
-    fi
+    # Token refresh is handled by the codex-oauth-refresh k8s CronJob
+    # deployed in deploy_oauth_refresh_cronjobs() (called from deploy_management_tools).
 
     access_tok=""; refresh_tok=""; account_id=""; expires_ms=""
     unset access_tok refresh_tok account_id expires_ms
@@ -2848,6 +2832,9 @@ GWEOF
 deploy_management_tools() {
     step 9 10 "Installing Management Tools"
 
+    # ── OAuth token refresh CronJobs (replaces legacy host crontab) ──
+    deploy_oauth_refresh_cronjobs
+
     # ── ocl-nuke (modular, with secure cleanup) ──
     cat > "${SCRIPTS_DIR}/ocl-nuke" << 'NUKEOF'
 #!/bin/bash
@@ -3653,6 +3640,203 @@ SVCEOF
         sudo systemctl start ocl-trade-executor >/dev/null 2>&1
         ok "trade-executor.py installed + systemd service started"
     fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# OAUTH TOKEN REFRESH — k8s CronJobs (W5: replaces host crontab entries)
+# ═══════════════════════════════════════════════════════════════════════
+
+deploy_oauth_refresh_cronjobs() {
+    info "── Deploying OAuth token refresh CronJobs ──"
+
+    # ── RBAC: ServiceAccount + Role + RoleBinding ──────────────────────
+    kubectl apply -f- >/dev/null 2>&1 << 'RBACEOF'
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oauth-refresh-sa
+  namespace: ocl-agents
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: oauth-refresh-role
+  namespace: ocl-agents
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: oauth-refresh-binding
+  namespace: ocl-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: oauth-refresh-role
+subjects:
+  - kind: ServiceAccount
+    name: oauth-refresh-sa
+    namespace: ocl-agents
+RBACEOF
+
+    # ── Anthropic OAuth refresh CronJob ────────────────────────────────
+    # Reads ~/.claude/.credentials.json (updated by Claude Code in background),
+    # patches the anthropic-oauth secret, and restarts the gateway.
+    kubectl apply -f- >/dev/null 2>&1 << 'ANTHEOF'
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: anthropic-oauth-refresh
+  namespace: ocl-agents
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: oauth-refresh-sa
+          volumes:
+            - name: claude-creds
+              hostPath:
+                path: /home/ocl/.claude/.credentials.json
+                type: File
+          containers:
+            - name: refresh
+              image: alpine:3.19
+              command: [sh, -c]
+              args:
+                - |
+                  set -e
+                  apk add --no-cache -q python3 curl
+                  CREDS=/creds/.credentials.json
+                  ACCESS=$(python3 -c "import json; d=json.load(open('$CREDS')); print(d['claudeAiOauth']['accessToken'])")
+                  REFRESH=$(python3 -c "import json; d=json.load(open('$CREDS')); print(d['claudeAiOauth']['refreshToken'])")
+                  EXPIRES=$(python3 -c "import json; d=json.load(open('$CREDS')); print(d['claudeAiOauth']['expiresAt'])")
+                  NOW_MS=$(python3 -c "import time; print(int(time.time()*1000))")
+                  EXPIRES_IN=$(python3 -c "print(($EXPIRES - $NOW_MS) // 1000 // 60)")
+                  echo "Anthropic OAuth token expires in ${EXPIRES_IN} minutes"
+                  TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  API=https://kubernetes.default.svc
+                  A64=$(printf '%s' "$ACCESS"  | base64 -w0)
+                  R64=$(printf '%s' "$REFRESH" | base64 -w0)
+                  E64=$(printf '%s' "$EXPIRES" | base64 -w0)
+                  curl -sSk -X PATCH "$API/api/v1/namespaces/ocl-agents/secrets/anthropic-oauth" \
+                    -H "Authorization: Bearer $TOKEN" \
+                    -H "Content-Type: application/strategic-merge-patch+json" \
+                    -d "{\"data\":{\"ANTHROPIC_OAUTH_TOKEN\":\"$A64\",\"ANTHROPIC_REFRESH_TOKEN\":\"$R64\",\"ANTHROPIC_OAUTH_EXPIRES\":\"$E64\"}}"
+                  echo "Secret updated"
+                  TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                  curl -sSk -X PATCH "$API/apis/apps/v1/namespaces/ocl-agents/deployments/gateway-home" \
+                    -H "Authorization: Bearer $TOKEN" \
+                    -H "Content-Type: application/strategic-merge-patch+json" \
+                    -d "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$TS\"}}}}}"
+                  echo "Gateway restart triggered"
+              volumeMounts:
+                - name: claude-creds
+                  mountPath: /creds/.credentials.json
+                  readOnly: true
+ANTHEOF
+
+    ok "anthropic-oauth-refresh CronJob deployed (every 6h)"
+
+    # ── OpenAI Codex OAuth refresh CronJob (only if Codex OAuth is active) ──
+    if [ "${HAS_CODEX_OAUTH:-false}" = "true" ]; then
+        kubectl apply -f- >/dev/null 2>&1 << 'CODEXEOF'
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: codex-oauth-refresh
+  namespace: ocl-agents
+spec:
+  schedule: "30 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: oauth-refresh-sa
+          volumes:
+            - name: codex-auth
+              hostPath:
+                path: /home/ocl/.codex
+                type: Directory
+            - name: npm-global
+              hostPath:
+                path: /home/ocl/.npm-global
+                type: Directory
+          containers:
+            - name: refresh
+              image: node:22-alpine
+              securityContext:
+                runAsUser: 0
+              command: [sh, -c]
+              args:
+                - |
+                  set -e
+                  apk add --no-cache -q python3 curl
+                  export HOME=/root
+                  export PATH="/mnt/npm-global/bin:$PATH"
+                  ln -sf /mnt/codex-auth /root/.codex
+                  codex login --refresh 2>/dev/null || true
+                  AUTH=/root/.codex/auth.json
+                  ACCESS=$(python3 -c "import json; d=json.load(open('$AUTH')); print(d['tokens']['access_token'])")
+                  REFRESH=$(python3 -c "import json; d=json.load(open('$AUTH')); print(d['tokens']['refresh_token'])")
+                  ACCOUNT=$(python3 -c "import json; d=json.load(open('$AUTH')); print(d['tokens']['account_id'])")
+                  EXPIRES=$(python3 -c "
+import json,base64
+d=json.load(open('$AUTH'))
+a=d['tokens']['access_token']
+p=a.split('.')[1]; p+='='*(4-len(p)%4)
+import json as j2; claims=j2.loads(base64.b64decode(p))
+print(claims['exp']*1000)")
+                  NOW_MS=$(python3 -c "import time; print(int(time.time()*1000))")
+                  EXPIRES_IN=$(python3 -c "print(($EXPIRES - $NOW_MS) // 1000 // 60)")
+                  echo "Codex OAuth token expires in ${EXPIRES_IN} minutes"
+                  TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  API=https://kubernetes.default.svc
+                  A64=$(printf '%s' "$ACCESS"  | base64 -w0)
+                  R64=$(printf '%s' "$REFRESH" | base64 -w0)
+                  AC64=$(printf '%s' "$ACCOUNT" | base64 -w0)
+                  E64=$(printf '%s' "$EXPIRES" | base64 -w0)
+                  curl -sSk -X PATCH "$API/api/v1/namespaces/ocl-agents/secrets/openai-codex-oauth" \
+                    -H "Authorization: Bearer $TOKEN" \
+                    -H "Content-Type: application/strategic-merge-patch+json" \
+                    -d "{\"data\":{\"OPENAI_CODEX_ACCESS_TOKEN\":\"$A64\",\"OPENAI_CODEX_REFRESH_TOKEN\":\"$R64\",\"OPENAI_CODEX_ACCOUNT_ID\":\"$AC64\",\"OPENAI_CODEX_EXPIRES\":\"$E64\"}}"
+                  echo "Codex secret updated"
+                  TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                  curl -sSk -X PATCH "$API/apis/apps/v1/namespaces/ocl-agents/deployments/gateway-home" \
+                    -H "Authorization: Bearer $TOKEN" \
+                    -H "Content-Type: application/strategic-merge-patch+json" \
+                    -d "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"kubectl.kubernetes.io/restartedAt\":\"$TS\"}}}}}"
+                  echo "Gateway restart triggered"
+              volumeMounts:
+                - name: codex-auth
+                  mountPath: /mnt/codex-auth
+                - name: npm-global
+                  mountPath: /mnt/npm-global
+                  readOnly: true
+CODEXEOF
+        ok "codex-oauth-refresh CronJob deployed (every 6h, offset 30m)"
+    fi
+
+    # ── Remove legacy host crontab entries if present ──────────────────
+    ( crontab -l 2>/dev/null \
+        | grep -v "oauth-refresh.sh" \
+        | grep -v "openai-codex-refresh.sh" \
+    ) | crontab - 2>/dev/null || true
 }
 
 # ═══════════════════════════════════════════════════════════════════════
