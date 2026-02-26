@@ -262,7 +262,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 |----|-------------|----------|
 | REQ-13.1 | Dedicated Egress Proxy pod in ocl-services namespace handles all outbound external agent traffic | MUST |
 | REQ-13.2 | Redis-based whitelist (`ocl:egress:whitelist`) and blacklist (`ocl:egress:blacklist`) of external endpoints | MUST |
-| REQ-13.3 | Requests to blacklisted endpoints blocked; unknown endpoints allowed but logged | MUST |
+| REQ-13.3 | Whitelist-only egress model: only `ocl:egress:whitelist` members are allowed; unknown and blacklisted endpoints are blocked with HTTP 403 and logged to `ocl:security:audit` stream | MUST |
 | REQ-13.4 | Internal traffic (valid HMAC) bypasses Egress Proxy; only unsigned/external traffic routed through it | MUST |
 | REQ-13.5 | Security alerts posted to Telegram when blacklisted endpoint is contacted or HMAC verification fails | MUST |
 
