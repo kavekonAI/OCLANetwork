@@ -726,12 +726,12 @@ NAS data is ALWAYS preserved unless you explicitly run `ocl-nuke nas-data <path>
 
 ### Interactive Mode
 ```bash
-bash setup-wizard-v20.sh
+bash setup-wizard.sh
 ```
 
 ### Unattended Mode (One-Click Deploy)
 ```bash
-bash setup-wizard-v20.sh --env /path/to/.env
+bash setup-wizard.sh --env /path/to/.env
 ```
 
 In unattended mode, the wizard reads all configuration from a `.env` file and runs the entire 10-step deployment without any interactive prompts. The `.env` file is shredded after secrets are injected into K8s Secrets.

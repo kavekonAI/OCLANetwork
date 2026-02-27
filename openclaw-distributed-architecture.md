@@ -615,10 +615,10 @@ Each gateway can be deployed unattended via `.env` file:
 
 ```bash
 # Deploy Home gateway (one-click)
-bash setup-wizard-v20.sh --env /path/to/home.env
+bash setup-wizard.sh --env /path/to/home.env
 
 # Deploy Cloud gateway (one-click, via Tailscale SSH)
-ssh cloud-node 'bash setup-wizard-v20.sh --env /path/to/cloud.env'
+ssh cloud-node 'bash setup-wizard.sh --env /path/to/cloud.env'
 ```
 
 Each `.env` file contains gateway-specific config (NAS IP, agent selection, optimizer toggle). The wizard auto-detects which gateway tier to deploy based on the `GATEWAY_TIER` field.

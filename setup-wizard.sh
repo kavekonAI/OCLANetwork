@@ -9,7 +9,7 @@
 #    D. Trading air-gap      → Market Data Fetcher agent
 #    E. Rate limit resume    → Redis task checkpoints + recovery protocol
 #
-#  Usage: bash setup-wizard-v20.sh
+#  Usage: bash setup-wizard.sh
 #  Re-run anytime to detect existing state and scale.
 #═══════════════════════════════════════════════════════════════════════════
 
@@ -3665,7 +3665,7 @@ if [ -z "$AGENT" ] || [ "${1:-}" = "--help" ]; then
     echo "  Re-deploys a previously nuked agent."
     echo "  Example: ocl-start agent content-creator"
     echo ""
-    echo "  For adding new agents, use: bash setup-wizard-v20.sh"
+    echo "  For adding new agents, use: bash setup-wizard.sh"
     exit 1
 fi
 echo -e "${YELLOW}Re-deploying agent: ${AGENT}...${NC}"
@@ -3680,7 +3680,7 @@ fi
 kubectl exec -n ocl-services deploy/redis -- redis-cli HSET \
     "ocl:agent-status:${AGENT}" status "running" >/dev/null 2>&1
 echo -e "${GREEN}✅ Agent ${AGENT} re-deployed. It will check Redis for pending tasks.${NC}"
-echo "  For full agent setup with new SOUL, run: bash setup-wizard-v20.sh"
+echo "  For full agent setup with new SOUL, run: bash setup-wizard.sh"
 STARTEOF
     chmod +x "${SCRIPTS_DIR}/ocl-start"
     sudo ln -sf "${SCRIPTS_DIR}/ocl-start" /usr/local/bin/ocl-start 2>/dev/null || true
@@ -4500,7 +4500,7 @@ generate_env_example() {
     local dest="${1:-.env.example}"
     cat > "$dest" << 'ENVEOF'
 # OCL Setup Wizard — Unattended Mode Configuration Template
-# Usage: bash setup-wizard-v20.sh --env /path/to/.env
+# Usage: bash setup-wizard.sh --env /path/to/.env
 #
 # ─── REQUIRED: At least one LLM API key ───────────────────────────────
 ANTHROPIC_API_KEY=sk-ant-...
@@ -4845,8 +4845,8 @@ main() {
                 UNATTENDED=true
                 if [[ $# -lt 2 || -z "${2:-}" ]]; then
                     echo -e "${RED}Error: --env requires a file path${NC}"
-                    echo "Usage: bash setup-wizard-v20.sh --env /path/to/.env"
-                    echo "       bash setup-wizard-v20.sh --generate-env   # create .env.example template"
+                    echo "Usage: bash setup-wizard.sh --env /path/to/.env"
+                    echo "       bash setup-wizard.sh --generate-env   # create .env.example template"
                     exit 1
                 fi
                 ENV_FILE="$2"
@@ -4855,13 +4855,13 @@ main() {
                 ;;
             --generate-env)
                 generate_env_example ".env.example"
-                echo "Edit .env.example, then run: bash setup-wizard-v20.sh --env .env.example"
+                echo "Edit .env.example, then run: bash setup-wizard.sh --env .env.example"
                 exit 0
                 ;;
             *)
                 echo -e "${RED}Unknown option: $1${NC}"
-                echo "Usage: bash setup-wizard-v20.sh [--env /path/to/.env]"
-                echo "       bash setup-wizard-v20.sh --generate-env   # create .env.example template"
+                echo "Usage: bash setup-wizard.sh [--env /path/to/.env]"
+                echo "       bash setup-wizard.sh --generate-env   # create .env.example template"
                 exit 1
                 ;;
         esac
@@ -4870,7 +4870,7 @@ main() {
     if [ "$UNATTENDED" = true ]; then
         if [ -z "$ENV_FILE" ] || [ ! -f "$ENV_FILE" ]; then
             echo -e "${RED}Error: .env file not found: ${ENV_FILE}${NC}"
-            echo "Usage: bash setup-wizard-v20.sh --env /path/to/.env"
+            echo "Usage: bash setup-wizard.sh --env /path/to/.env"
             exit 1
         fi
 
@@ -4927,7 +4927,7 @@ main() {
             echo -e "${RED}Missing required .env fields:${NC}"
             for m in "${missing[@]}"; do echo "  - $m"; done
             echo ""
-            echo "Run 'bash setup-wizard-v20.sh --generate-env' to create a template."
+            echo "Run 'bash setup-wizard.sh --generate-env' to create a template."
             exit 1
         fi
 
@@ -5139,10 +5139,10 @@ main() {
     echo -e "    ${GREEN}ocl-nuke all --confirm='NUKE ALL'${NC}  Nuclear option"
     echo ""
     echo -e "  ${BOLD}Unattended Deploy:${NC}"
-    echo -e "    ${GREEN}bash setup-wizard-v20.sh --env .env${NC}  One-click deploy from .env file"
+    echo -e "    ${GREEN}bash setup-wizard.sh --env .env${NC}  One-click deploy from .env file"
     echo ""
     echo -e "  ${BOLD}To scale later:${NC}"
-    echo -e "    Run ${CYAN}bash setup-wizard-v20.sh${NC} again — detects existing state,"
+    echo -e "    Run ${CYAN}bash setup-wizard.sh${NC} again — detects existing state,"
     echo -e "    offers to add agents, gateways, or services."
     echo ""
     echo -e "  ${BOLD}Logs:${NC} ${OCL_LOG}"
