@@ -1876,7 +1876,9 @@ DASHEOF
 
     # Set up Tailscale Serve for SSO (zero-login via identity headers)
     if [ -n "$ts_users" ] && command -v tailscale &>/dev/null; then
-        tailscale serve --bg --set-path / https+insecure://localhost:30780 >/dev/null 2>&1 && {
+        # Allow current user to manage tailscale serve without sudo
+        sudo tailscale set --operator="$(whoami)" 2>/dev/null || true
+        tailscale serve --bg https+insecure://localhost:30780 >/dev/null 2>&1 && {
             local ts_hostname
             ts_hostname=$(tailscale status --json 2>/dev/null | \
                 python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
