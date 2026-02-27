@@ -1876,9 +1876,17 @@ DASHEOF
 
     # Set up Tailscale Serve for SSO (zero-login via identity headers)
     if [ -n "$ts_users" ] && command -v tailscale &>/dev/null; then
+        # k3s Traefik LoadBalancer steals port 443 via kube-proxy iptables DNAT rules;
+        # convert to ClusterIP so tailscaled can bind 443 on the Tailscale IP
+        kubectl patch svc traefik -n kube-system --type='json' -p='[
+          {"op":"replace","path":"/spec/type","value":"ClusterIP"},
+          {"op":"remove","path":"/spec/loadBalancerIP"},
+          {"op":"remove","path":"/spec/allocateLoadBalancerNodePorts"},
+          {"op":"remove","path":"/spec/externalTrafficPolicy"}
+        ]' 2>/dev/null || true
         # Allow current user to manage tailscale serve without sudo
         sudo tailscale set --operator="$(whoami)" 2>/dev/null || true
-        tailscale serve --bg https+insecure://localhost:30780 >/dev/null 2>&1 && {
+        tailscale serve --bg --https=443 http://localhost:30780 >/dev/null 2>&1 && {
             local ts_hostname
             ts_hostname=$(tailscale status --json 2>/dev/null | \
                 python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
