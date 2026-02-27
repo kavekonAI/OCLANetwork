@@ -564,10 +564,11 @@ app.post('/api/gateway/restart', auth, async (req, res) => {
 const server = http.createServer(app);
 
 server.on('upgrade', (req, socket, head) => {
-  if (req.url === '/ws') {
+  const [pathname, qs] = (req.url || '').split('?');
+  if (pathname === '/ws') {
     // Auth check on upgrade
     if (DASHBOARD_TOKEN) {
-      const params = new URLSearchParams(req.url.split('?')[1] || '');
+      const params = new URLSearchParams(qs || '');
       const token = params.get('token');
       const authHeader = req.headers['authorization'] || '';
       if (token !== DASHBOARD_TOKEN && authHeader !== `Bearer ${DASHBOARD_TOKEN}`) {
