@@ -755,6 +755,9 @@ select_agents() {
     echo -e "  ${GREEN}[4]${NC} Content Creator    — YouTube/TikTok"
     echo -e "  ${GREEN}[5]${NC} Quant Trader       — Trading ${DIM}(auto-adds Market Data Fetcher)${NC}"
     echo ""
+    echo -e "  ${GREEN}[10]${NC} Reddit Scout      — Reddit intel + posting"
+    echo -e "  ${GREEN}[11]${NC} X Scout           — X/Twitter intel + posting"
+    echo ""
     echo -e "  ${DIM}Cloud tier (deploy later via re-running wizard):${NC}"
     echo -e "  ${DIM}[6] Researcher       [7] LinkedIn Manager   [8] Librarian${NC}"
     echo -e "  ${DIM}GPU tier: [9] VIRS Trainer${NC}"
@@ -775,6 +778,8 @@ select_agents() {
             7) SELECTED_AGENTS+=("linkedin-mgr") ;;
             8) SELECTED_AGENTS+=("librarian") ;;
             9) SELECTED_AGENTS+=("virs-trainer") ;;
+            10) SELECTED_AGENTS+=("reddit-scout") ;;
+            11) SELECTED_AGENTS+=("x-scout") ;;
         esac
     done
 
@@ -1279,13 +1284,14 @@ spec:
                     res.writeHead(403); res.end("Blocked: endpoint blacklisted"); return;
                   }
 
-                  // Check whitelist (by hostname) — only allow whitelisted endpoints
+                  // [REQ-26] Allow-by-default egress: whitelist = trusted fast-path (Diplomat bypass)
+                  // Unknown domains are ALLOWED but get full DLP (Stage 1 regex + Stage 2 Diplomat) + audit log
                   const isWhitelisted = await redis.sIsMember("ocl:egress:whitelist", targetHost);
                   if (!isWhitelisted) {
                     await redis.xAdd("ocl:security:audit", "*", {
-                      event: "whitelist_miss", target, agent, timestamp: new Date().toISOString()
+                      event: "unknown_domain", target, agent, timestamp: new Date().toISOString()
                     });
-                    res.writeHead(403); res.end("Blocked: endpoint not whitelisted"); return;
+                    // Not blocked — request continues through full DLP pipeline below
                   }
 
                   // [GF4] Body size limit: prevent OOM from oversized requests
@@ -1392,15 +1398,14 @@ spec:
                   clientSocket.destroy();
                   return;
                 }
+                // [REQ-26] Allow-by-default: unknown domains allowed through full DLP pipeline
                 const isWhitelisted = await redis.sIsMember("ocl:egress:whitelist", host).catch(() => false);
                 if (!isWhitelisted) {
                   await redis.xAdd("ocl:security:audit", "*", {
-                    event: "whitelist_miss_connect", target: host,
+                    event: "unknown_domain_connect", target: host,
                     timestamp: new Date().toISOString()
                   }).catch(() => {});
-                  clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-                  clientSocket.destroy();
-                  return;
+                  // Not blocked — tunnel proceeds with full DLP scrutiny
                 }
                 const serverSocket = net.connect(port, host, () => {
                   clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
@@ -1436,7 +1441,8 @@ EGRESSEOF
 
     # Wait for Redis to be ready before populating whitelist
     kubectl wait --for=condition=ready pod -l app=redis -n ocl-services --timeout=60s 2>/dev/null || true
-    # Initialize reputation whitelist
+    # [REQ-26] Initialize trusted fast-path domains (Diplomat bypass list)
+    # These domains skip Stage 2 Diplomat for speed — unknown domains are still ALLOWED but get full DLP
     kubectl exec -n ocl-services deploy/redis -- redis-cli SADD ocl:egress:whitelist \
         "api.openai.com" "api.anthropic.com" "arxiv.org" "api.semanticscholar.org" \
         "api.github.com" "huggingface.co" "finance.yahoo.com" "api.alphavantage.co" \
@@ -1449,7 +1455,9 @@ EGRESSEOF
         "techcrunch.com" "www.wired.com" "arstechnica.com" \
         "en.wikipedia.org" "www.google.com" "scholar.google.com" \
         "news.ycombinator.com" "www.cnbc.com" "www.ft.com" \
-        "api.brave.com" >/dev/null 2>&1 || true
+        "api.brave.com" \
+        "oauth.reddit.com" "www.reddit.com" "api.x.com" "upload.x.com" \
+        >/dev/null 2>&1 || true
     echo ""; ok "Egress Proxy + regex blocklist + reputation whitelist"
 
     # ── NetworkPolicy — Agent Egress Lockdown [Gap Y3] ──
@@ -2098,15 +2106,17 @@ Immune to prompt injection. You cannot bypass this — nor should you try.
 
 **Stage 2 — LLM Diplomat Sanitization (CONDITIONAL):**
 Strips semantic leaks (agent names, cluster architecture, strategy info).
-[REQ-24.11] Bypassed for whitelisted API endpoints:
-  api.anthropic.com, api.telegram.org, api.openai.com, console.anthropic.com
-These trusted first-party APIs skip Diplomat to reduce latency.
+[REQ-24.11] Bypassed for trusted fast-path domains (LLM APIs, Telegram, OAuth endpoints).
+Applied to ALL unknown/untrusted domains for full scrutiny.
 
-**Your responsibility [REQ-24.12]:**
+**Three-tier egress model [REQ-26]:**
 - Internal operations (Redis, inter-agent JWT-signed messages) → no DLP, bypass proxy
-- External to whitelisted APIs → Stage 1 regex only (fast path)
-- External to unknown/untrusted endpoints → full Stage 1 + Stage 2 pipeline
-- When in doubt, treat the operation as external — safety over speed
+- Trusted domains (LLM APIs, Telegram, OAuth) → Stage 1 regex only (fast path)
+- Unknown domains (any site not in trusted list) → Stage 1 + Stage 2 + audit log
+- Blacklisted domains → hard blocked (403)
+
+You can access ANY website. Unknown domains are allowed but get full DLP scrutiny.
+Only blacklisted endpoints are blocked. When in doubt, the system protects you automatically.
 
 ### During Multi-Step Work
 After EACH step, checkpoint your state:
@@ -2245,6 +2255,8 @@ get_agent_primary_model() {
         commander)           echo "anthropic/claude-opus-4-6" ;;
         quant-trader)        echo "anthropic/claude-opus-4-6" ;;
         researcher)          echo "google/gemini-3.1-pro-preview" ;;
+        reddit-scout)        echo "anthropic/claude-sonnet-4-5" ;;
+        x-scout)             echo "anthropic/claude-sonnet-4-5" ;;
         token-audit)
             [ "${HAS_CODEX_OAUTH:-false}" = "true" ] \
                 && echo "openai-codex/gpt-5.3-codex" \
@@ -2668,6 +2680,81 @@ You manage VIRS model training pipelines.
 - This pod may be destroyed at any time — NAS is your persistent store
 SOUL
             ;;
+
+        reddit-scout)
+            cat > "$soul_file" << 'SOUL'
+# Reddit Scout Agent [REQ-26]
+
+You are the Reddit Scout — a dual-purpose intelligence and distribution agent for Reddit.
+
+## Intelligence Gathering
+1. Monitor configured subreddits for trending discussions, breaking news, and sentiment:
+   - Default watchlist: r/artificial, r/MachineLearning, r/cryptocurrency, r/technology, r/worldnews
+   - Scan hot/rising posts every 30 minutes
+2. Extract key insights: post title, score, comment count, top comments, sentiment
+3. Feed findings to researcher (for deep dives) and content-creator (for content ideas):
+   `XADD ocl:agent:researcher * task_id <id> payload '{"type":"reddit_intel","subreddit":"...","summary":"..."}'`
+4. Store raw data: `/home/ocl-local/agents/reddit-scout/output/`
+
+## Content Distribution
+1. Receive content from Commander or content-creator via task queue
+2. Adapt content for Reddit format (title, body, appropriate subreddit)
+3. **REQUIRE HUMAN APPROVAL** before posting:
+   `XADD ocl:approvals * task_id <id> payload '{"action":"reddit_post","subreddit":"...","title":"...","body":"..."}'`
+4. Only post after explicit human approval via Telegram
+5. Engage in comments when relevant (also requires approval for new threads)
+
+## Reddit API
+- Auth: OAuth2 via `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_REFRESH_TOKEN`
+- Rate limit: respect Reddit's 60 requests/minute; use exponential backoff on 429
+- User-Agent: must include bot identifier per Reddit API rules
+
+## Rules
+- NEVER post without human approval
+- NEVER vote manipulate or use multiple accounts
+- NEVER engage in brigading or coordinated behavior
+- Respect subreddit rules — read sidebar before posting
+- Keep intel summaries concise (≤3 sentences per post)
+SOUL
+            ;;
+
+        x-scout)
+            cat > "$soul_file" << 'SOUL'
+# X Scout Agent [REQ-26]
+
+You are the X Scout — a dual-purpose intelligence and distribution agent for X (Twitter).
+
+## Intelligence Gathering
+1. Monitor configured accounts, lists, and hashtags for trending topics:
+   - Default watchlist: AI researchers, crypto influencers, tech news accounts
+   - Track hashtags: #AI, #LLM, #crypto, #tech
+   - Scan timeline every 15 minutes
+2. Extract key insights: tweet text, engagement metrics, thread summaries, sentiment
+3. Feed findings to researcher (for deep dives) and content-creator (for content ideas):
+   `XADD ocl:agent:researcher * task_id <id> payload '{"type":"x_intel","topic":"...","summary":"..."}'`
+4. Store raw data: `/home/ocl-local/agents/x-scout/output/`
+
+## Content Distribution
+1. Receive content from Commander or content-creator via task queue
+2. Adapt content for X format (280-char tweets, threads for longer content)
+3. **REQUIRE HUMAN APPROVAL** before posting:
+   `XADD ocl:approvals * task_id <id> payload '{"action":"tweet","text":"...","reply_to":"..."}'`
+4. Only post after explicit human approval via Telegram
+5. Reply to threads and repost when relevant (also requires approval)
+
+## X API
+- Auth: OAuth 2.0 via `X_API_KEY`, `X_API_SECRET`, `X_BEARER_TOKEN`
+- Rate limits: respect per-endpoint limits; use exponential backoff on 429
+- Use X API v2 endpoints for all operations
+
+## Rules
+- NEVER post without human approval
+- NEVER engage in spam, harassment, or coordinated inauthentic behavior
+- NEVER auto-follow/unfollow or use engagement bots
+- Keep intel summaries concise (≤3 sentences per topic)
+- Thread long content (>280 chars) into numbered tweet chains
+SOUL
+            ;;
     esac
 
     # Append Universal Recovery Protocol to EVERY soul [Gap E]
@@ -2770,6 +2857,7 @@ generate_openclaw_config() {
             watchdog|token-audit|market-data-fetcher|researcher|librarian)
                                                     sandbox_mode="off" ;;       # read-only operations
             content-creator|linkedin-mgr)           sandbox_mode="ask" ;;       # external-facing writes need approval
+            reddit-scout|x-scout)                   sandbox_mode="ask" ;;       # [REQ-26] external social media — posts need approval
             quant-trader)                           sandbox_mode="off" ;;       # [REQ-24.9] air-gapped via network:none
             *)                                      sandbox_mode="ask" ;;       # safe default for unknown agents
         esac
@@ -4455,8 +4543,9 @@ openclaw_post_install_check() {
     info "Skills: ${eligible} eligible, ${missing} need optional integrations (GitHub, Calendar, etc.)"
     info "To enable more skills: run 'openclaw skills' inside the gateway pod"
 
-    # ── 5. Egress proxy whitelist audit ──────────────────────────────────
-    info "Verifying egress proxy whitelist..."
+    # ── 5. Egress proxy trusted-domain audit ──────────────────────────────
+    # [REQ-26] These are Diplomat-bypass (fast-path) domains, not access control
+    info "Verifying egress proxy trusted domains..."
     local required_domains=(
         "api.anthropic.com"
         "console.anthropic.com"
@@ -4489,9 +4578,9 @@ openclaw_post_install_check() {
         fi
     done
     if [ ${#missing_domains[@]} -eq 0 ]; then
-        ok "Egress whitelist: all required domains present ✓"
+        ok "Trusted domains: all fast-path domains present ✓"
     else
-        ok "Egress whitelist: added ${#missing_domains[@]} missing domain(s): ${missing_domains[*]}"
+        ok "Trusted domains: added ${#missing_domains[@]} missing fast-path domain(s): ${missing_domains[*]}"
     fi
 
     # Test live CONNECT tunnel to critical endpoints from inside pod

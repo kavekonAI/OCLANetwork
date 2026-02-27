@@ -552,6 +552,79 @@ curl -s "https://api.telegram.org/botYOUR_BOT_TOKEN/sendMessage" \
 
 ---
 
+## 7.5. Reddit API Setup (Optional — for Reddit Scout agent)
+
+If you plan to deploy the Reddit Scout agent for Reddit intelligence gathering and content distribution:
+
+### Create a Reddit App
+
+1. Go to https://www.reddit.com/prefs/apps
+2. Click **"create another app..."** at the bottom
+3. Fill in:
+   - **Name:** OCL Agent Network (or your preferred name)
+   - **Type:** Select **"script"** (for personal use bots)
+   - **Redirect URI:** `http://localhost:8080` (not used but required)
+4. Click **Create app**
+5. Note down:
+   - **Client ID** — the string under the app name (e.g., `aB1cD2eF3gH4iJ`)
+   - **Client Secret** — the "secret" field
+
+### Get a Refresh Token
+
+```bash
+# 1. Get an authorization code (open in browser)
+# Replace CLIENT_ID with your app's client ID
+echo "https://www.reddit.com/api/v1/authorize?client_id=CLIENT_ID&response_type=code&state=ocl&redirect_uri=http://localhost:8080&duration=permanent&scope=read+submit+identity"
+
+# 2. After authorizing, extract the 'code' parameter from the redirect URL
+
+# 3. Exchange for refresh token
+curl -X POST "https://www.reddit.com/api/v1/access_token" \
+  -u "CLIENT_ID:CLIENT_SECRET" \
+  -d "grant_type=authorization_code&code=YOUR_CODE&redirect_uri=http://localhost:8080"
+# Save the refresh_token from the response
+```
+
+### Values Needed
+
+```
+Reddit Client ID:      _____________ (from app settings)
+Reddit Client Secret:  _____________ (from app settings)
+Reddit Refresh Token:  _____________ (from OAuth flow)
+```
+
+---
+
+## 7.6. X (Twitter) API Setup (Optional — for X Scout agent)
+
+If you plan to deploy the X Scout agent for X/Twitter intelligence gathering and content distribution:
+
+### Create an X Developer Account
+
+1. Go to https://developer.x.com/ and sign in
+2. Sign up for the **Free** or **Basic** tier (Free tier: 1,500 tweets read/month; Basic: 10,000 tweets read + 3,000 write)
+3. Create a **Project** and an **App** within it
+
+### Get API Credentials
+
+1. In the Developer Portal, navigate to your App → **Keys and tokens**
+2. Under **Consumer Keys**, generate:
+   - **API Key** (also called Consumer Key)
+   - **API Key Secret** (also called Consumer Secret)
+3. Under **Authentication Tokens**, generate:
+   - **Bearer Token** (for read-only access)
+4. For posting (write access), also generate **Access Token** and **Access Token Secret** under OAuth 1.0a
+
+### Values Needed
+
+```
+X API Key:        _____________ (Consumer Key)
+X API Secret:     _____________ (Consumer Secret)
+X Bearer Token:   _____________ (for read access)
+```
+
+---
+
 ## 8. Pre-Flight Checklist
 
 Run through this checklist before starting the wizard. Every item should be ✅.

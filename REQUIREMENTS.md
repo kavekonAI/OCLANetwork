@@ -267,11 +267,12 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 |----|-------------|----------|
 | REQ-13.1 | Dedicated Egress Proxy pod in ocl-services namespace handles all outbound external agent traffic | MUST |
 | REQ-13.2 | Redis-based whitelist (`ocl:egress:whitelist`) and blacklist (`ocl:egress:blacklist`) of external endpoints | MUST |
-| REQ-13.3 | Whitelist-only egress model: only `ocl:egress:whitelist` members are allowed; unknown and blacklisted endpoints are blocked with HTTP 403 and logged to `ocl:security:audit` stream | MUST |
+| REQ-13.3 | Allow-by-default egress model [REQ-26]: blacklisted endpoints are blocked with HTTP 403; whitelisted (trusted) endpoints get fast-path (Stage 1 regex only, Diplomat bypassed); unknown endpoints are ALLOWED through full DLP pipeline (Stage 1 + Stage 2 Diplomat) and logged to `ocl:security:audit` as `unknown_domain` | MUST |
 | REQ-13.4 | Internal traffic (valid HMAC) bypasses Egress Proxy; only unsigned/external traffic routed through it | MUST |
 | REQ-13.5 | Security alerts posted to Telegram when blacklisted endpoint is contacted or HMAC verification fails | MUST |
-| REQ-13.6 | Egress whitelist MUST include news, research, and search domains (reuters.com, apnews.com, bbc.com, news.google.com, arxiv.org, en.wikipedia.org, scholar.google.com, api.brave.com, etc.) to enable `web_search` and `web_fetch` tools for researcher, content-creator, and subagent tasks | MUST |
-| REQ-13.7 | Post-install egress audit (`openclaw_post_install_check`) MUST verify all required domains are present in the whitelist and auto-add any missing entries | MUST |
+| REQ-13.6 | Trusted fast-path list (`ocl:egress:whitelist`) MUST include LLM APIs, Telegram, OAuth endpoints, news/research/search domains, and social platform APIs (Reddit, X) — these domains skip Stage 2 Diplomat for speed; all other domains are still accessible through full DLP | MUST |
+| REQ-13.7 | Post-install egress audit (`openclaw_post_install_check`) MUST verify all trusted fast-path domains are present and auto-add any missing entries | MUST |
+| REQ-13.8 | Unknown domains (not in whitelist or blacklist) MUST be allowed through the full DLP pipeline (Stage 1 regex + Stage 2 Diplomat) and logged to `ocl:security:audit` as `unknown_domain` — agents can access any website with full DLP scrutiny | MUST |
 
 ### REQ-14: Agent Learnings Knowledge Base (ALKB)
 
@@ -413,7 +414,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | REQ-24.10 | Stage 1 deterministic regex DLP MUST run on ALL outbound traffic without exception — it is fast (<1ms) and immune to prompt injection | MUST |
-| REQ-24.11 | Stage 2 LLM Diplomat sanitization SHOULD be bypassed for traffic to whitelisted API endpoints (api.anthropic.com, api.telegram.org, api.openai.com, console.anthropic.com) — these are trusted first-party APIs where Diplomat adds latency without security benefit | SHOULD |
+| REQ-24.11 | Stage 2 LLM Diplomat sanitization SHOULD be bypassed for traffic to trusted fast-path domains in `ocl:egress:whitelist` (LLM APIs, Telegram, OAuth, social platform APIs) — unknown domains get full Stage 1 + Stage 2 DLP pipeline per the allow-by-default model [REQ-13.3/REQ-13.8] | SHOULD |
 | REQ-24.12 | Agents MUST self-classify operations as "internal" (Redis, inter-agent JWT-signed messages) or "external" (any non-whitelisted endpoint) and apply the full two-stage DLP pipeline only to external operations — internal traffic bypasses DLP entirely via valid JWT | MUST |
 
 ### REQ-25: Universal Telegram Group Visibility Protocol
@@ -425,6 +426,32 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-25.3 | Air-gapped agents (`network: none`) MUST write visibility events to Redis stream `ocl:visibility:<agent-id>` instead of posting directly; Commander relays these every 60 seconds per REQ-02.8 | MUST |
 | REQ-25.4 | The universal protocol coexists with existing agent-specific Telegram posting — agent-specific instructions take precedence for specialized events (Watchdog security alerts, Token-Audit cost summaries) | MUST |
 | REQ-25.5 | Commander MUST include air-gapped relay polling (`XREAD ocl:visibility:*`) in its 60-second monitoring cycle alongside heartbeat checks | MUST |
+
+### REQ-26: Open Egress Model + Social Media Agents
+
+#### Allow-by-Default Egress
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-26.1 | Egress proxy MUST use an allow-by-default model: blacklisted domains are blocked (403), trusted domains get fast-path (Stage 1 only), and unknown domains are allowed through full DLP pipeline (Stage 1 + Stage 2) with audit logging | MUST |
+| REQ-26.2 | The `ocl:egress:whitelist` Redis SET is repurposed from "access control" to "trusted fast-path" — membership means Diplomat bypass, NOT access permission | MUST |
+| REQ-26.3 | NetworkPolicy MUST remain unchanged — agents can only reach the internet through the Egress Proxy, never directly. The proxy is less restrictive but the network-level isolation stays | MUST |
+
+#### Reddit Scout Agent
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-26.4 | `reddit-scout` agent MUST monitor configured subreddits (hot/rising posts every 30 min), extract trending discussions and sentiment, and feed intel to researcher and content-creator via Redis task queue | MUST |
+| REQ-26.5 | `reddit-scout` MUST require human approval via Telegram before posting to any subreddit or engaging in comments — same approval workflow as trades (REQ-07.7 pattern) | MUST |
+| REQ-26.6 | Reddit API OAuth2 credentials (`REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_REFRESH_TOKEN`) MUST be stored in K8s Secrets, never on disk | MUST |
+
+#### X Scout Agent
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-26.7 | `x-scout` agent MUST monitor configured accounts, lists, and hashtags (timeline scan every 15 min), extract trending topics and discourse, and feed intel to researcher and content-creator via Redis task queue | MUST |
+| REQ-26.8 | `x-scout` MUST require human approval via Telegram before posting tweets, replying to threads, or reposting — same approval workflow as trades (REQ-07.7 pattern) | MUST |
+| REQ-26.9 | X API v2 credentials (`X_API_KEY`, `X_API_SECRET`, `X_BEARER_TOKEN`) MUST be stored in K8s Secrets, never on disk | MUST |
 
 ---
 
@@ -869,6 +896,8 @@ Check it's not already running (prevent duplicates):
 | Researcher | Cloud | Opus | bridge | AI paper research |
 | LinkedIn Manager | Cloud | Sonnet | bridge | Social posting |
 | Librarian | Cloud | Opus | bridge | Book archival |
+| Reddit Scout | Home | Sonnet | bridge | Reddit intel + content distribution |
+| X Scout | Home | Sonnet | bridge | X/Twitter intel + content distribution |
 | VIRS Trainer | GPU | Sonnet | bridge | ML training |
 
 ---
@@ -930,6 +959,8 @@ Check it's not already running (prevent duplicates):
 - [ ] `codex-oauth-refresh` CronJob (every 4h) — Codex OAuth token sync
 - [ ] `token-sync.js` background process in gateway pod — 60s auto-refresh + auth-profiles.json update
 - [ ] `console.anthropic.com`, `chatgpt.com`, `auth.openai.com` in egress whitelist for OAuth refresh
-- [ ] News/research/search domains whitelisted for web_search and web_fetch: reuters, AP, BBC, Google, Wikipedia, arXiv, etc.
+- [ ] Egress proxy uses allow-by-default model: unknown domains allowed through full DLP, not blocked
+- [ ] Reddit/X API domains in trusted fast-path list (oauth.reddit.com, api.x.com, etc.)
+- [ ] Reddit and X API credentials stored in K8s Secrets only
 - [ ] Gateway startup script writes auth-profiles.json from secrets at runtime — OAuth tokens never baked into image
 - [ ] `~/.claude/.credentials.json` permissions 646 — readable/writable by gateway pod (uid 1000) and CronJob (root)
