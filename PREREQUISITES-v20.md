@@ -1082,11 +1082,11 @@ bash setup-wizard-v20.sh
 │  CLEAR TASK: redis-cli DEL ocl:task-state:<id>:*     │
 │                                                       │
 │  FILES:                                               │
-│    REQUIREMENTS.md        — Full spec                │
-│    openclaw-architecture.md — Architecture           │
-│    setup-wizard-v20.sh        — Installer                │
+│    REQUIREMENTS-v20.md    — Full spec                │
+│    openclaw-architecture-v20.md — Architecture       │
+│    setup-wizard-v20.sh    — Installer                │
 │    .env.example           — Unattended template      │
-│    PREREQUISITES.md       — This document            │
+│    PREREQUISITES-v20.md   — This document            │
 │                                                       │
 └──────────────────────────────────────────────────────┘
 ```
