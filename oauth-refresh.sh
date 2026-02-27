@@ -33,6 +33,6 @@ kubectl create secret generic anthropic-oauth -n ocl-agents \
   --dry-run=client -o json | kubectl apply -f -
 
 # Ensure permissions for pod readability (uid 1000 reads file owned by uid 1001)
-chmod 644 "$CREDS" 2>/dev/null || true
+chmod 666 "$CREDS" 2>/dev/null || true
 
 echo "Secret synced (no restart). Token-sync.js handles live distribution."

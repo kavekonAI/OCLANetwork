@@ -221,7 +221,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-17.10 | `chatgpt.com`, `auth.openai.com`, and `console.anthropic.com` added to egress whitelist — required for OAuth inference and token refresh | MUST |
 | REQ-17.11 | NetworkPolicy `agent-egress-lockdown` includes `ipBlock` CIDR rules for k8s API server (`10.43.0.1/32`, `192.168.0.0/16`) on ports 443/6443 — required for CronJob k8s Secret patches | MUST |
 | REQ-17.12 | OAuth refresh uses raw HTTP/1.1 over TLS through proxy CONNECT tunnel — Node 22's built-in `fetch()` ignores `HTTPS_PROXY`, and `https.request` with `createConnection` drops the `Host` header (HTTP 520). JSON body with `client_id` required by Anthropic refresh endpoint | MUST |
-| REQ-17.13 | `~/.claude/.credentials.json` permissions set to `644` (owner rw, others r) — host user is uid 1001, gateway pod runs as uid 1000. CronJob and token-sync.js use `{ mode: 0o644 }` on writes to preserve readability | MUST |
+| REQ-17.13 | `~/.claude/.credentials.json` permissions set to `666` (all rw) — host user is uid 1001, gateway pod runs as uid 1000. Pod MUST write back refreshed tokens; Anthropic rotates refresh tokens on use, and failure to persist the new one invalidates on-disk credentials. CronJob and token-sync.js use `{ mode: 0o666 }` on writes | MUST |
 | REQ-17.14 | Credentials hostPath uses **directory mount** (`~/.claude/` → `/creds/`) NOT single-file mount — prevents stale-inode bug where pod sees deleted file after host rewrites credentials.json (new inode). Directory mounts resolve filename on each read | MUST |
 | REQ-17.15 | `oauth-refresh.sh` (legacy host script) does NOT restart the gateway pod — token-sync.js distributes refreshed tokens live via auth-profiles.json. Pod restarts cause 2.5-minute downtime for all agents | MUST |
 
@@ -998,7 +998,7 @@ Check it's not already running (prevent duplicates):
 - [ ] Reddit/X API domains in trusted fast-path list (oauth.reddit.com, api.x.com, etc.)
 - [ ] Reddit and X API credentials stored in K8s Secrets only
 - [ ] Gateway startup script writes auth-profiles.json from secrets at runtime — OAuth tokens never baked into image
-- [ ] `~/.claude/.credentials.json` permissions 644 — readable by gateway pod (uid 1000); CronJob writes with `{ mode: 0o644 }`
+- [ ] `~/.claude/.credentials.json` permissions 666 — pod (uid 1000) must write back refreshed tokens to prevent refresh-token invalidation
 - [ ] Credentials mount uses directory (`~/.claude/` → `/creds/`) — NOT single-file hostPath (prevents stale-inode after file rewrite)
 - [ ] `oauth-refresh.sh` does NOT restart gateway pod — token-sync.js distributes tokens live
 - [ ] Agents use native OpenClaw file tools (Read/Write/Edit/Glob/Grep) — not Bash file commands — preserving sandbox guarantees

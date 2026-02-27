@@ -3070,8 +3070,9 @@ if (funcStart > -1 && funcEnd > 0) {
         gw_cpu_limit="1"
     fi
 
-    # Ensure credentials.json is readable by pod (uid 1000) — host user is uid 1001 (ocl)
-    [ -f "${HOME}/.claude/.credentials.json" ] && chmod 644 "${HOME}/.claude/.credentials.json" 2>/dev/null || true
+    # Mode 666: pod (uid 1000) must read AND write — on refresh, Anthropic rotates the
+    # refresh token; if token-sync.js can't persist the new one, on-disk token is invalidated
+    [ -f "${HOME}/.claude/.credentials.json" ] && chmod 666 "${HOME}/.claude/.credentials.json" 2>/dev/null || true
 
     # [REQ-27.4] Create lifecycle hook scripts on host for container mount
     mkdir -p "${OCL_DEPLOY}/hooks"
@@ -3440,7 +3441,7 @@ async function sync(){
           if(d.refresh_token)oa.refreshToken=d.refresh_token;
           if(d.expires_in)oa.expiresAt=Date.now()+d.expires_in*1000;
           creds.claudeAiOauth=oa;
-          fs.writeFileSync(CP,JSON.stringify(creds),{mode:0o644});
+          fs.writeFileSync(CP,JSON.stringify(creds),{mode:0o666});
           lastTok='';
           console.log('[token-sync] Refreshed! Expires in '+Math.floor((oa.expiresAt-Date.now())/60000)+'m');
         }else{console.error('[token-sync] No access_token in response');}
@@ -4564,8 +4565,8 @@ spec:
                   creds.claudeAiOauth.accessToken = tokenToUse;
                   creds.claudeAiOauth.refreshToken = refreshToken;
                   creds.claudeAiOauth.expiresAt = expiresAt;
-                  fs.writeFileSync('/creds/.credentials.json', JSON.stringify(creds), { mode: 0o644 });
-                  console.log('[oauth-refresh] credentials.json updated on host (mode 644)');
+                  fs.writeFileSync('/creds/.credentials.json', JSON.stringify(creds), { mode: 0o666 });
+                  console.log('[oauth-refresh] credentials.json updated on host (mode 666)');
                 }
 
                 // Also sync to k8s secret (for pod restarts / env var bootstrap)
