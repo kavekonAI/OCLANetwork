@@ -4855,7 +4855,7 @@ main() {
         # Set defaults for optional fields
         NAS_PATH="${NAS_PATH:-/volume1/openclaw-data}"
         TOTAL_BUDGET="${TOTAL_BUDGET:-300}"
-        OPTIMIZER_ACTIVE="${OPTIMIZER_ACTIVE:-true}"
+        OPTIMIZER_ACTIVE="${OPTIMIZER_ACTIVE:-false}"
         GATEWAY_TIER="${GATEWAY_TIER:-home}"
 
         # Validate required fields (using locals from safe parsing above)
