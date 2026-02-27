@@ -911,7 +911,7 @@ data:
       exit 1
     fi
     for agent in commander watchdog content-creator quant-trader market-data-fetcher \
-                 researcher linkedin-mgr librarian virs-trainer; do
+                 researcher linkedin-mgr librarian virs-trainer reddit-scout x-scout; do
       redis-cli -h localhost XGROUP CREATE "ocl:agent:${agent}" "${agent}" \$ MKSTREAM 2>/dev/null || true
     done
     redis-cli -h localhost XGROUP CREATE ocl:tasks commander \$ MKSTREAM 2>/dev/null || true
@@ -3403,7 +3403,7 @@ HOOKSCFG
               fi
               AUTH_JSON="\${AUTH_JSON}\"google\":{\"type\":\"api_key\",\"provider\":\"google\",\"key\":\"\${GOOGLE_KEY}\"}"
               AUTH_JSON="\${AUTH_JSON}}}"
-              for AGENT_ID in main commander watchdog token-audit content-creator researcher linkedin-mgr librarian; do
+              for AGENT_ID in main commander watchdog token-audit content-creator quant-trader market-data-fetcher researcher linkedin-mgr librarian virs-trainer reddit-scout x-scout; do
                 mkdir -p /home/node/.openclaw/agents/\${AGENT_ID}/agent
                 # sessions dir required by openclaw; missing dir causes CRITICAL in doctor
                 mkdir -p /home/node/.openclaw/agents/\${AGENT_ID}/sessions
@@ -3793,7 +3793,7 @@ case $1 in
         echo ""
         echo "═══ Redis Heartbeats ═══"
         for agent in commander watchdog token-audit content-creator quant-trader market-data-fetcher \
-                     researcher linkedin-mgr librarian virs-trainer; do
+                     researcher linkedin-mgr librarian virs-trainer reddit-scout x-scout; do
             hb=$(kubectl exec -n ocl-services deploy/redis -- \
                 redis-cli GET "ocl:heartbeat:${agent}" 2>/dev/null || echo "")
             [ -n "$hb" ] && echo "  ${agent}: 🟢 alive" || echo "  ${agent}: ⚪ no heartbeat"

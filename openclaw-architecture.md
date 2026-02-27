@@ -105,6 +105,42 @@ Lightweight cost watchdog. Prevents any agent from burning through the budget un
 - **Writes to Redis:** `ocl:cost:<agent-id>:<date>` with token counts, costs, cache hit rates
 - **Rules:** Never makes task decisions. Only monitors and alerts.
 
+### Researcher
+Finds, reads, and summarizes cutting-edge AI research papers.
+
+- **Model:** Gemini 3.1 Pro (high-context for long papers)
+- **Network:** bridge
+- **Sandbox:** `off` (read-only: web search, paper retrieval, summarization)
+- **Sources:** arXiv, Semantic Scholar, HuggingFace Papers, OpenReview
+- **NAS:** `/mnt/nas/agents/researcher/` (papers, summaries)
+- **Cron:** Daily 08:00 — scan arXiv for new papers matching configured keywords
+
+### LinkedIn Manager
+Manages professional AI content on LinkedIn.
+
+- **Model:** Claude Sonnet 4.5
+- **Network:** bridge
+- **Sandbox:** `ask` (external-facing: posts require human approval)
+- **Workflow:** Receives brief from Commander → drafts post → stores via `/nas-write` → requests approval → publishes
+
+### Librarian
+Builds a searchable knowledge library from open-access sources.
+
+- **Model:** Claude Opus 4.6
+- **Network:** bridge
+- **Sandbox:** `off` (read-only: NAS file indexing and search)
+- **Sources:** archive.org, Open Library, Project Gutenberg (open-access only)
+- **NAS:** `/mnt/nas/agents/library/` (raw scans, extracted text, index)
+
+### VIRS Trainer
+Manages VIRS model training pipelines on GPU instances.
+
+- **Model:** Claude Sonnet 4.5
+- **Network:** bridge
+- **Sandbox:** `ask` (GPU training, ephemeral pod — needs approval for resource ops)
+- **NAS:** `/mnt/nas/agents/virs-training/` (training data, checkpoints, output)
+- **Rules:** Saves checkpoints frequently. Stops early if training diverges (loss > 3x initial).
+
 ### Reddit Scout [REQ-26]
 Dual-purpose Reddit intelligence and content distribution agent.
 
@@ -834,7 +870,7 @@ Instead of a blanket `sandbox.mode: "ask"` for all agents, each agent's sandbox 
 
 ### Telegram Group Visibility [REQ-25]
 
-REQ-02 requires all agent activity to be visible in the Telegram group (OCLANGrp). The **Group Visibility Protocol** is the fourth universal SOUL block (alongside Recovery, Conversation Memory, and Provider Badge) that gives every agent a baseline set of Telegram posting instructions.
+REQ-02 requires all agent activity to be visible in the Telegram group (OCLANGrp). The **Group Visibility Protocol** is one of five universal SOUL blocks (Recovery, Conversation Memory, Provider Badge, Group Visibility, File Operations) that gives every agent a baseline set of Telegram posting instructions.
 
 **Lifecycle events posted to each agent's Forum topic:**
 

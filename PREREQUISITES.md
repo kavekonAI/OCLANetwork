@@ -513,7 +513,8 @@ Telegram serves as the human-visible audit trail for ALL agent activity (REQ-02)
 3. Add your bot to the group
 4. Create per-agent Forum topics named after each agent ID:
    `commander`, `watchdog`, `token-audit`, `content-creator`, `market-data-fetcher`,
-   `researcher`, `linkedin-mgr`, `librarian`, `quant-trader`, `virs-training`
+   `researcher`, `linkedin-mgr`, `librarian`, `quant-trader`, `virs-trainer`,
+   `reddit-scout`, `x-scout`
 5. Create cross-cutting topics: `#System`, `#Security`, `#Dashboard`
 6. Send a test message in the group
 
@@ -740,7 +741,7 @@ The wizard guides you through 10 steps. Here's what to expect at each one:
 
 **Step 5 — Agent Selection**
 - Commander, Watchdog, and Token Audit are auto-selected (required)
-- Choose additional agents: content-creator, quant-trader, researcher, linkedin-mgr, librarian, virs-trainer
+- Choose additional agents: content-creator, quant-trader, researcher, linkedin-mgr, librarian, virs-trainer, reddit-scout, x-scout
 - Each agent's purpose is described in the selection menu
 
 **Step 6 — Budget Configuration**
@@ -754,7 +755,7 @@ The wizard guides you through 10 steps. Here's what to expect at each one:
 - Takes 1–3 minutes
 
 **Step 8 — Gateway & Agent Deployment** (automatic)
-- Generates SOUL files for each agent with the Universal Recovery Protocol, Provider Identity Badge, and Conversation Memory Protocol
+- Generates SOUL files for each agent with five universal protocol blocks: Recovery Protocol, Conversation Memory, Provider Identity Badge, Group Visibility [REQ-25], and File Operations [REQ-27]
 - Each SOUL is substituted with the agent's primary model emoji and short name (e.g. `_🟠 Opus 4.6_`)
 - Gateway startup script copies SOUL files to `workspace-{agent}/SOUL.md` — the path openclaw actually reads
 - Deploys the gateway pod with all agents

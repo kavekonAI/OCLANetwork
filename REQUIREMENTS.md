@@ -140,7 +140,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-07.6 | Dedicated Market Data Fetcher with write-only access to trading/data/, no access to signals/ | MUST |
 | REQ-07.7 | Trade execution is a separate process requiring human approval | MUST |
 | REQ-07.8 | Per-agent Docker sandbox isolation | MUST |
-| REQ-07.9 | exec.ask: on for all agents | MUST |
+| REQ-07.9 | Per-agent sandbox mode enforced (superseded by REQ-24.7 risk-based matrix) | MUST |
 | REQ-07.10 | No community skills installed until vetted | MUST |
 | REQ-07.11 | k3s installed with flannel-backend=wireguard-native for encrypted inter-node traffic | MUST |
 | REQ-07.12 | Secrets mounted as tmpfs volumes (RAM-disk), not environment variables, to prevent zombie exposure | MUST |
@@ -604,6 +604,18 @@ agent_model_configs:
     fallbacks: [gpt-4o, deepseek, local-fast]
     max_budget: 30
     optimize_prompts: true
+
+  reddit-scout:
+    primary: claude-sonnet
+    fallbacks: [gpt-4o, gemini-flash, local-fast]
+    max_budget: 25
+    optimize_prompts: true
+
+  x-scout:
+    primary: claude-sonnet
+    fallbacks: [gpt-4o, gemini-flash, local-fast]
+    max_budget: 25
+    optimize_prompts: true
 ```
 
 ---
@@ -798,7 +810,9 @@ Per-agent topics (named by agent ID — REQ-02.3):
 ├── linkedin-mgr         (post drafts & approvals)
 ├── librarian            (archive acquisitions, index updates)
 ├── quant-trader         (signals & analysis — relayed by Commander via REQ-02.8)
-└── virs-training        (training progress — relayed by Commander via REQ-02.8)
+├── virs-trainer         (training progress — relayed by Commander via REQ-02.8)
+├── reddit-scout         (subreddit intel, content distribution)
+└── x-scout              (X/Twitter intel, content distribution)
 
 Cross-cutting topics (specialized concerns):
 ├── #System              (Watchdog: health, errors, rate limits, subscription status)
@@ -945,7 +959,7 @@ Check it's not already running (prevent duplicates):
 - [ ] Market Data Fetcher: write-only to trading/data/
 - [ ] Trade executor: separate process, human approval
 - [ ] Gateway bound to 127.0.0.1 or Tailscale IP
-- [ ] exec.ask: on for all agents
+- [ ] Per-agent sandbox modes enforced per REQ-24.7 risk matrix (off/non-main/ask)
 - [ ] NAS mounted with noexec
 - [ ] No community skills installed
 - [ ] LiteLLM budget caps configured
