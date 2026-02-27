@@ -321,7 +321,8 @@ install_prerequisites() {
         curl -sfL https://get.k3s.io | sh -s - \
             --write-kubeconfig-mode 600 \
             --flannel-backend=none \
-            --disable-network-policy >/dev/null 2>&1
+            --disable-network-policy \
+            --disable=traefik >/dev/null 2>&1
         mkdir -p ~/.kube
         sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
         sudo chown "$(whoami)" ~/.kube/config
@@ -334,7 +335,7 @@ install_prerequisites() {
             warn "Calico install failed — falling back to Flannel (NetworkPolicy will NOT be enforced)"
             # Uninstall k3s (with --flannel-backend=none) before reinstalling with Flannel
             /usr/local/bin/k3s-uninstall.sh 2>/dev/null || true
-            curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 600" sh >/dev/null 2>&1
+            curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 600 --disable=traefik" sh >/dev/null 2>&1
             sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
             sudo chown "$(whoami)" ~/.kube/config
         }
@@ -1708,7 +1709,7 @@ JWTEOF
 }
 
 # ═══════════════════════════════════════════════════════════════════════
-# DASHBOARD — React + Express; NodePort 30780; Bearer-token auth [W1]
+# DASHBOARD — React + Express; NodePort 30780; Tailscale SSO + Bearer-token fallback [W1]
 # ═══════════════════════════════════════════════════════════════════════
 
 deploy_dashboard() {
@@ -1898,13 +1899,23 @@ DASHEOF
     fi
 
     echo ""
-    ok "Dashboard deployed → http://$(hostname -I | awk '{print $1}'):30780"
-    info "Dashboard token: ${dash_token}"
-    info "(Also: kubectl get secret dashboard-token -n ocl-services -o jsonpath='{.data.DASHBOARD_TOKEN}' | base64 -d)"
     if [ -n "$ts_users" ]; then
+        local ts_url
+        ts_url=$(tailscale status --json 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
+        if [ -n "$ts_url" ]; then
+            ok "Dashboard deployed → https://${ts_url}/ (Tailscale SSO — zero-login)"
+        else
+            ok "Dashboard deployed → http://$(hostname -I | awk '{print $1}'):30780"
+        fi
         info "Tailscale SSO: zero-login for ${ts_users}"
         info "Add more SSO users: kubectl edit secret dashboard-token -n ocl-services"
+        info "Direct access fallback: http://$(hostname -I | awk '{print $1}'):30780 (Bearer token)"
+    else
+        ok "Dashboard deployed → http://$(hostname -I | awk '{print $1}'):30780"
     fi
+    info "Dashboard token: ${dash_token}"
+    info "(Also: kubectl get secret dashboard-token -n ocl-services -o jsonpath='{.data.DASHBOARD_TOKEN}' | base64 -d)"
 
     # Zero out token var
     dash_token=""
@@ -5037,7 +5048,7 @@ main() {
     echo "  ║    ✅ Q. ocl-upgrade syncs all gateways atomically          ║"
     echo "  ║    ✅ R. Diplomat DLP sanitizes all egress traffic           ║"
     echo "  ║    ✅ S. Premium subscription wait-for-reset (not failover) ║"
-    echo "  ║    ✅ T. Dashboard: efficiency ratios + reset countdown     ║"
+    echo "  ║    ✅ T. Dashboard: SSO + efficiency ratios + countdown     ║"
     echo "  ║    ✅ U. Egress Proxy + reputation blacklist/whitelist      ║"
     echo "  ║    ✅ V. ALKB: failure→fix knowledge base + monetization    ║"
     echo "  ║    ✅ W. Nuke-to-Knowledge archives before wiping           ║"
@@ -5107,6 +5118,8 @@ main() {
     echo "  ║    ✅ KF4. JWT rotator RBAC: secrets perm in ocl-agents    ║"
     echo "  ║    ✅ KF5. NAS-sync envFrom telegram-tokens (disk alerts)  ║"
     echo "  ║    ✅ KF6. rsync empty-dir cleanup (inode exhaustion fix)  ║"
+    echo "  ║    ✅ LF1. Tailscale SSO zero-login (identity headers)   ║"
+    echo "  ║    ✅ LF2. Traefik→ClusterIP (frees port 443 for SSO)    ║"
     echo "  ║                                                               ║"
     echo "  ╚═══════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
