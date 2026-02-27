@@ -1,18 +1,44 @@
 // API helpers + WebSocket hook
 
-let TOKEN = null;
+const TOKEN_KEY = 'oclan-dashboard-token';
 
-export function initToken() {
-  const meta = document.querySelector('meta[name="dashboard-token"]');
-  TOKEN = meta?.content || '';
+function getToken() {
+  return sessionStorage.getItem(TOKEN_KEY) || '';
+}
+
+export function setToken(token) {
+  if (token) {
+    sessionStorage.setItem(TOKEN_KEY, token);
+  } else {
+    sessionStorage.removeItem(TOKEN_KEY);
+  }
+}
+
+export function hasToken() {
+  return !!sessionStorage.getItem(TOKEN_KEY);
+}
+
+export async function verifyToken(token) {
+  const r = await fetch('/api/auth/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  return r.ok;
 }
 
 function headers() {
-  return TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+  const t = getToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
 async function get(path) {
   const r = await fetch(path, { headers: headers() });
+  if (r.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event('oclan-auth-expired'));
+    throw new Error('Session expired');
+  }
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
 }
@@ -23,6 +49,11 @@ async function post(path, body) {
     headers: { ...headers(), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (r.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event('oclan-auth-expired'));
+    throw new Error('Session expired');
+  }
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
 }
@@ -33,6 +64,11 @@ async function del(path, body) {
     headers: { ...headers(), 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (r.status === 401) {
+    setToken(null);
+    window.dispatchEvent(new Event('oclan-auth-expired'));
+    throw new Error('Session expired');
+  }
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
   return r.json();
 }
@@ -66,8 +102,9 @@ export function useWebSocket(onMessage) {
 
   useEffect(() => {
     function connect() {
+      const token = getToken();
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const url = `${proto}://${location.host}/ws${TOKEN ? `?token=${TOKEN}` : ''}`;
+      const url = `${proto}://${location.host}/ws${token ? `?token=${token}` : ''}`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
 

@@ -232,7 +232,7 @@ app.use(express.json());
 
 const DIST = path.join(__dirname, 'dist');
 
-// Serve index.html with injected meta token
+// Serve index.html — no token injection (user must authenticate via login form)
 app.get('/', (req, res) => serveIndex(res));
 app.get('/index.html', (req, res) => serveIndex(res));
 
@@ -241,12 +241,17 @@ function serveIndex(res) {
   if (!fs.existsSync(indexPath)) {
     return res.status(503).send('Dashboard not built. Run: npm run build');
   }
-  let html = fs.readFileSync(indexPath, 'utf8');
-  const meta = `<meta name="dashboard-token" content="${DASHBOARD_TOKEN}">`;
-  html = html.replace('<head>', `<head>\n    ${meta}`);
   res.setHeader('Content-Type', 'text/html');
-  res.send(html);
+  res.sendFile(indexPath);
 }
+
+// ── API: Auth verify ──────────────────────────────────────────────────────
+app.post('/api/auth/verify', (req, res) => {
+  const token = req.body?.token || '';
+  if (!DASHBOARD_TOKEN) return res.json({ valid: true }); // no token configured (dev)
+  if (token === DASHBOARD_TOKEN) return res.json({ valid: true });
+  res.status(401).json({ valid: false });
+});
 
 // Static assets (JS/CSS bundles — no token injection needed)
 app.use(express.static(DIST, {

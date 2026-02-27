@@ -715,7 +715,7 @@ Both panels call the same lifecycle APIs that back the CLI tools. All actions ar
 
 - **Tailscale SSH** required to issue commands to remote cloud/GPU nodes
 - **Kubernetes access** via `kubectl` — bundled into `ocl-*` helper scripts
-- Dashboard actions authenticated via the same Tailscale identity
+- Dashboard actions authenticated via Bearer token (entered via login form, stored in `sessionStorage` — never embedded in HTML)
 
 NAS data is ALWAYS preserved unless you explicitly run `ocl-nuke nas-data <path>`.
 
