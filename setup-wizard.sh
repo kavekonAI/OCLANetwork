@@ -3071,7 +3071,7 @@ if (funcStart > -1 && funcEnd > 0) {
     fi
 
     # Ensure credentials.json is readable by pod (uid 1000) — host user is uid 1001 (ocl)
-    [ -f "${HOME}/.claude/.credentials.json" ] && chmod 646 "${HOME}/.claude/.credentials.json" 2>/dev/null || true
+    [ -f "${HOME}/.claude/.credentials.json" ] && chmod 644 "${HOME}/.claude/.credentials.json" 2>/dev/null || true
 
     # [REQ-27.4] Create lifecycle hook scripts on host for container mount
     mkdir -p "${OCL_DEPLOY}/hooks"
@@ -3440,7 +3440,7 @@ async function sync(){
           if(d.refresh_token)oa.refreshToken=d.refresh_token;
           if(d.expires_in)oa.expiresAt=Date.now()+d.expires_in*1000;
           creds.claudeAiOauth=oa;
-          fs.writeFileSync(CP,JSON.stringify(creds));
+          fs.writeFileSync(CP,JSON.stringify(creds),{mode:0o644});
           lastTok='';
           console.log('[token-sync] Refreshed! Expires in '+Math.floor((oa.expiresAt-Date.now())/60000)+'m');
         }else{console.error('[token-sync] No access_token in response');}
@@ -3546,7 +3546,7 @@ fi)
             - { name: local-ssd, mountPath: /home/ocl-local }
             - { name: api-secrets, mountPath: /run/secrets, readOnly: true }
             - { name: host-openclaw, mountPath: /host-openclaw, readOnly: true }
-            - { name: claude-creds, mountPath: /creds/.credentials.json }
+            - { name: claude-creds, mountPath: /creds, readOnly: false }
             - { name: hooks, mountPath: /hooks, readOnly: true }
             - { name: skills, mountPath: /skills, readOnly: true }
           resources:
@@ -3568,7 +3568,7 @@ fi)
         - name: host-openclaw
           hostPath: { path: "${ocl_module_path}", type: Directory }
         - name: claude-creds
-          hostPath: { path: /home/ocl/.claude/.credentials.json, type: File }
+          hostPath: { path: /home/ocl/.claude, type: Directory }
         - name: hooks
           hostPath: { path: ${OCL_DEPLOY}/hooks, type: DirectoryOrCreate }
         - name: skills
@@ -4495,8 +4495,8 @@ spec:
           volumes:
           - name: claude-creds
             hostPath:
-              path: /home/ocl/.claude/.credentials.json
-              type: File
+              path: /home/ocl/.claude
+              type: Directory
           containers:
           - name: refresh
             image: node:22-alpine
@@ -4505,7 +4505,7 @@ spec:
               value: "kubernetes.default.svc,kubernetes.default,10.0.0.0/8"
             volumeMounts:
             - name: claude-creds
-              mountPath: /creds/.credentials.json
+              mountPath: /creds
             command: ["node", "-e"]
             args:
             - |
@@ -4564,8 +4564,8 @@ spec:
                   creds.claudeAiOauth.accessToken = tokenToUse;
                   creds.claudeAiOauth.refreshToken = refreshToken;
                   creds.claudeAiOauth.expiresAt = expiresAt;
-                  fs.writeFileSync('/creds/.credentials.json', JSON.stringify(creds));
-                  console.log('[oauth-refresh] credentials.json updated on host');
+                  fs.writeFileSync('/creds/.credentials.json', JSON.stringify(creds), { mode: 0o644 });
+                  console.log('[oauth-refresh] credentials.json updated on host (mode 644)');
                 }
 
                 // Also sync to k8s secret (for pod restarts / env var bootstrap)
