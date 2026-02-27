@@ -2248,6 +2248,38 @@ If you have no network access, write visibility events to Redis instead:
 Commander relays these to your Forum topic every 60 seconds.
 '
 
+FILE_OPS_PROTOCOL='
+## ═══ FILE OPERATIONS PROTOCOL ═══
+## (Standard block — present in every agent SOUL)
+## Use OpenClaw native sandboxed tools — never raw bash for file I/O [REQ-27.1]
+
+### Mandatory Tool Usage
+| Operation | Use THIS | NOT this |
+|-----------|----------|----------|
+| Read file | `Read` tool | `cat`, `head`, `tail`, `less` |
+| Write file | `Write` tool | `echo >`, `cat <<EOF >` |
+| Edit file | `Edit` tool | `sed`, `awk`, `perl -i` |
+| Find files | `Glob` tool | `find`, `ls -R` |
+| Search content | `Grep` tool | `grep`, `rg`, `ack` |
+
+### Why This Matters
+- `Read`/`Write`/`Edit`/`Glob`/`Grep` work in ALL sandbox modes (off, non-main, ask)
+- `Bash` file commands are restricted by the sandbox and may silently fail
+- Native tools provide audit trails and permission checks
+- Only use `Bash` for: Redis CLI, API calls, system commands (not file I/O)
+
+### Storage Paths (SSD-First — REQ-16)
+- **Write to**: `/home/ocl-local/agents/<YOUR_ID>/output/` (local SSD)
+- **Read from**: `/mnt/nas/agents/<YOUR_ID>/` OR local SSD (check both)
+- `ocl-nas-sync` copies SSD to NAS every 5 minutes automatically
+- **Exception**: Air-gapped agents (quant-trader) use NAS directly for cross-agent data exchange
+
+### Storage Skills Available [REQ-27.7]
+- `/nas-write <path>` — Write to your output directory (SSD-first, auto-indexed in Redis)
+- `/nas-read <path>` — Read from storage (checks SSD then NAS)
+- `/nas-index agent:<YOUR_ID>` — Search your file index
+'
+
 # Maps agent ID to its primary model string
 get_agent_primary_model() {
     local id=$1
@@ -2453,14 +2485,14 @@ SOUL
 You create and manage video content for YouTube and TikTok.
 
 ## Workspace
-- Raw media: /mnt/nas/agents/content-creator/data/
-- Exports: /mnt/nas/agents/content-creator/output/
-- Logs: /mnt/nas/agents/content-creator/logs/
+- Raw media (read): /mnt/nas/agents/content-creator/data/
+- Exports (write): /home/ocl-local/agents/content-creator/output/
+- Logs (write): /home/ocl-local/agents/content-creator/logs/
 
 ## Workflow
 1. Receive brief from Commander via Redis queue
 2. Create content using tools in your sandbox
-3. Store output on NAS (write-once)
+3. Store output via `/nas-write` skill (SSD-first, auto-syncs to NAS)
 4. Report completion: `XADD ocl:results * task_id <id> agent content-creator status complete`
 5. Post summary to Telegram Content-Creator topic
 
@@ -2604,8 +2636,8 @@ You find, read, and summarize cutting-edge AI research papers.
 arXiv, Semantic Scholar, HuggingFace Papers, OpenReview
 
 ## Workspace
-- Downloaded papers: /mnt/nas/agents/researcher/data/papers/
-- Summaries: /mnt/nas/agents/researcher/output/summaries/YYYY-MM-DD/
+- Downloaded papers (read): /mnt/nas/agents/researcher/data/papers/
+- Summaries (write): /home/ocl-local/agents/researcher/output/summaries/YYYY-MM-DD/
 
 ## Output Format
 For each paper: ELI5 summary + key findings + practitioner implications
@@ -2628,7 +2660,7 @@ You manage professional AI content on LinkedIn.
 ## Workflow
 1. Receive content brief from Commander via Redis queue
 2. Draft post with appropriate tone and hashtags
-3. Store draft at /mnt/nas/agents/linkedin/output/drafts/
+3. Store draft via `/nas-write drafts/<filename>` (SSD-first, auto-syncs)
 4. Request human approval via Commander
 5. On approval: publish to LinkedIn
 6. Track engagement metrics
@@ -2649,9 +2681,9 @@ You build a searchable knowledge library from open-access sources.
 archive.org, Open Library, Project Gutenberg (open-access only)
 
 ## Workspace
-- Raw scans: /mnt/nas/agents/library/data/raw-scans/
-- Extracted text: /mnt/nas/agents/library/output/extracted/
-- Index: /mnt/nas/agents/library/output/index/
+- Raw scans (read): /mnt/nas/agents/library/data/raw-scans/
+- Extracted text (write): /home/ocl-local/agents/librarian/output/extracted/
+- Index (write): /home/ocl-local/agents/librarian/output/index/
 
 ## Workflow
 1. Search and download open-access books
@@ -2669,15 +2701,15 @@ SOUL
 You manage VIRS model training pipelines.
 
 ## Workspace
-- Training data: /mnt/nas/agents/virs-training/data/
-- Checkpoints: /mnt/nas/agents/virs-training/checkpoints/
-- Output: /mnt/nas/agents/virs-training/output/
+- Training data (read): /mnt/nas/agents/virs-training/data/
+- Checkpoints (write): /home/ocl-local/agents/virs-trainer/output/checkpoints/
+- Output (write): /home/ocl-local/agents/virs-trainer/output/
 
 ## Rules
-- ALWAYS save checkpoints to NAS (GPU instance is ephemeral)
+- ALWAYS save checkpoints frequently — `ocl-nas-sync` persists them to NAS every 5 minutes
 - Report GPU utilization to Commander
 - Stop early if training diverges (loss > 3x initial)
-- This pod may be destroyed at any time — NAS is your persistent store
+- This pod may be destroyed at any time — NAS (via sync) is your persistent store
 SOUL
             ;;
 
@@ -2778,6 +2810,10 @@ SOUL
     # Append Group Visibility Protocol — Telegram group audit trail [REQ-25]
     local visibility_block="${GROUP_VISIBILITY_PROTOCOL//<YOUR_ID>/${id}}"
     printf '\n%s\n' "$visibility_block" >> "$soul_file"
+
+    # Append File Operations Protocol — native tools + NAS skills [REQ-27]
+    local fileops_block="${FILE_OPS_PROTOCOL//<YOUR_ID>/${id}}"
+    printf '\n%s\n' "$fileops_block" >> "$soul_file"
 }
 
 # ─── OPENCLAW CONFIG ───────────────────────────────────────────────────
@@ -3036,6 +3072,173 @@ if (funcStart > -1 && funcEnd > 0) {
     # Ensure credentials.json is readable by pod (uid 1000) — host user is uid 1001 (ocl)
     [ -f "${HOME}/.claude/.credentials.json" ] && chmod 646 "${HOME}/.claude/.credentials.json" 2>/dev/null || true
 
+    # [REQ-27.4] Create lifecycle hook scripts on host for container mount
+    mkdir -p "${OCL_DEPLOY}/hooks"
+    cat > "${OCL_DEPLOY}/hooks/alkb-failure-hook.sh" << 'HOOK_FAIL_EOF'
+#!/bin/bash
+# ALKB safety-net hook: auto-archives tool failures to ALKB via Redis [REQ-27.4]
+# Fires on PostToolUseFailure — catches cases the agent's SOUL-based archiving misses.
+# Input: JSON on stdin with tool_name, tool_input, error, session_id, cwd
+INPUT=$(cat)
+TOOL=$(echo "$INPUT" | jq -r '.tool_name // "unknown"')
+ERROR=$(echo "$INPUT" | jq -r '.error // "unknown error"' | head -c 500)
+SESSION=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
+TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+LEARN_ID="hook-fail-$(date +%s)-$$"
+# Archive to ALKB via Redis
+redis-cli -h redis-service.ocl-services HSET "ocl:learnings:failures:${LEARN_ID}" \
+    agent "hook-${SESSION}" error_category "tool_failure" \
+    domain "$TOOL" error_log "$ERROR" \
+    source "lifecycle-hook" created_at "$TS" status "open" 2>/dev/null || true
+redis-cli -h redis-service.ocl-services ZADD "ocl:learnings:index" "$(date +%s)" "$LEARN_ID" 2>/dev/null || true
+redis-cli -h redis-service.ocl-services SADD "ocl:learnings:by-status:open" "$LEARN_ID" 2>/dev/null || true
+# Track for stop-hook summary
+mkdir -p /tmp/ocl-hook-failures
+echo "$LEARN_ID" > "/tmp/ocl-hook-failures/${SESSION}-$(date +%s)"
+exit 0
+HOOK_FAIL_EOF
+    cat > "${OCL_DEPLOY}/hooks/alkb-stop-hook.sh" << 'HOOK_STOP_EOF'
+#!/bin/bash
+# ALKB stop hook: reminds agent to archive failures if any occurred [REQ-27.4]
+# Fires on Stop — blocks with feedback if unarchived failures detected.
+INPUT=$(cat)
+SESSION=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
+FAILURES=$(find /tmp/ocl-hook-failures/ -name "${SESSION}-*" 2>/dev/null | wc -l)
+if [ "$FAILURES" -gt 0 ]; then
+    echo "You had ${FAILURES} tool failure(s) this session. Verify ALKB entries exist — check ocl:learnings:failures and write ALKB-FAIL summaries for any missing." >&2
+    # Clean up tracking files
+    rm -f /tmp/ocl-hook-failures/${SESSION}-* 2>/dev/null
+    exit 2
+fi
+exit 0
+HOOK_STOP_EOF
+    chmod +x "${OCL_DEPLOY}/hooks/"*.sh
+    ok "ALKB lifecycle hooks created"
+
+    # [REQ-27.7] Create custom NAS skill files on host for container mount
+    mkdir -p "${OCL_DEPLOY}/skills/nas-write" "${OCL_DEPLOY}/skills/nas-read" "${OCL_DEPLOY}/skills/nas-index"
+    cat > "${OCL_DEPLOY}/skills/nas-write/SKILL.md" << 'SKILL_WRITE_EOF'
+---
+name: nas-write
+description: Write files to agent storage with automatic SSD-first buffering and Redis indexing
+argument-hint: "<relative-path>"
+user-invocable: true
+allowed-tools: Write, Bash, Read, Glob
+---
+
+# NAS Writer Skill
+
+Write files to the correct SSD-first storage path with automatic Redis file indexing.
+
+## Usage
+`/nas-write reports/daily-summary.md`
+
+## Steps
+
+1. **Resolve path**: Your output directory is `/home/ocl-local/agents/{your-agent-id}/output/`
+   - Append the `$ARGUMENTS` relative path to this base
+   - Create parent directories if needed: `mkdir -p` via Bash
+
+2. **Write file**: Use the `Write` tool (NOT bash echo/cat) to write content to the resolved path
+
+3. **Register in Redis**: After writing, register the file for cross-agent discovery:
+   ```bash
+   FILE_PATH="/home/ocl-local/agents/{your-agent-id}/output/$ARGUMENTS"
+   FILE_SIZE=$(stat -c%s "$FILE_PATH" 2>/dev/null || echo 0)
+   SHA=$(sha256sum "$FILE_PATH" | cut -d' ' -f1)
+   redis-cli -h redis-service.ocl-services HSET "ocl:files:${SHA}" \
+       path "$FILE_PATH" agent "{your-agent-id}" \
+       created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" size "$FILE_SIZE"
+   redis-cli -h redis-service.ocl-services SADD "ocl:files:by-agent:{your-agent-id}" "$SHA"
+   ```
+
+4. **Confirm**: Report the written path and SHA to the caller
+
+## Notes
+- `ocl-nas-sync` copies SSD files to NAS every 5 minutes — no manual sync needed
+- Always use `Write` tool for file creation (sandbox-safe)
+- Tags can be added: `SADD ocl:files:by-tag:<tag> <sha>`
+SKILL_WRITE_EOF
+    cat > "${OCL_DEPLOY}/skills/nas-read/SKILL.md" << 'SKILL_READ_EOF'
+---
+name: nas-read
+description: Read files from agent storage — checks local SSD buffer first, falls back to NAS
+argument-hint: "<relative-path-or-query>"
+user-invocable: true
+allowed-tools: Read, Glob, Grep, Bash
+---
+
+# NAS Reader Skill
+
+Read files from agent storage with automatic SSD-first lookup and NAS fallback.
+
+## Usage
+- `/nas-read reports/daily-summary.md` — read a specific file
+- `/nas-read agent:researcher` — list files by agent via Redis index
+
+## Steps
+
+### Path-based read:
+1. **Check SSD first**: Try `Read` on `/home/ocl-local/agents/{agent-id}/output/$ARGUMENTS`
+2. **Fall back to NAS**: If not found on SSD, try `Read` on `/mnt/nas/agents/{agent-id}/output/$ARGUMENTS`
+3. **Cross-agent read**: For another agent's files, use `/mnt/nas/agents/{other-agent-id}/`
+
+### Query-based read:
+1. **By agent**: `redis-cli -h redis-service.ocl-services SMEMBERS "ocl:files:by-agent:{agent-id}"`
+2. **By tag**: `redis-cli -h redis-service.ocl-services SMEMBERS "ocl:files:by-tag:{tag}"`
+3. **Resolve hash to path**: `redis-cli -h redis-service.ocl-services HGET "ocl:files:{sha}" path`
+4. **Read the resolved path** using `Read` tool
+
+## Notes
+- Always use `Read` tool (not cat/head/tail) for sandbox safety
+- SSD files may be newer than NAS copies (sync runs every 5 minutes)
+SKILL_READ_EOF
+    cat > "${OCL_DEPLOY}/skills/nas-index/SKILL.md" << 'SKILL_INDEX_EOF'
+---
+name: nas-index
+description: Search and browse the NAS file index — find files by agent, tag, date, or content
+argument-hint: "[agent:<id>] [tag:<tag>] [query:<text>]"
+user-invocable: true
+allowed-tools: Bash, Grep, Glob, Read
+---
+
+# NAS Index Skill
+
+Search and browse the file index across all agents.
+
+## Usage
+- `/nas-index agent:researcher` — list all files from researcher agent
+- `/nas-index tag:summary` — list files tagged "summary"
+- `/nas-index query:quarterly report` — content search across output directories
+
+## Commands
+
+### List files by agent:
+```bash
+redis-cli -h redis-service.ocl-services SMEMBERS "ocl:files:by-agent:$ARGUMENTS"
+# Then for each SHA: HGETALL "ocl:files:<sha>"
+```
+
+### List files by tag:
+```bash
+redis-cli -h redis-service.ocl-services SMEMBERS "ocl:files:by-tag:<tag>"
+```
+
+### Content search:
+Use `Grep` tool to search across agent output directories:
+- SSD: `/home/ocl-local/agents/*/output/`
+- NAS: `/mnt/nas/agents/*/output/`
+
+### Recent files:
+```bash
+redis-cli -h redis-service.ocl-services ZREVRANGEBYSCORE "ocl:learnings:index" +inf -inf LIMIT 0 20
+```
+
+## Output Format
+Present results as a table: `| Agent | Path | Size | Created | Tags |`
+SKILL_INDEX_EOF
+    ok "NAS skills created (nas-write, nas-read, nas-index)"
+
     cat > "${K8S_DIR}/gateway-${TIER}.yaml" << GWEOF
 apiVersion: apps/v1
 kind: Deployment
@@ -3118,6 +3321,54 @@ PROXY_INIT_EOF
                     "\$BOOT_TS" "\$BOOT_TS" > "\${WS_DIR}/.openclaw/workspace-state.json"
                 fi
               done
+              # [REQ-27.4] Deploy lifecycle hooks for ALKB safety net
+              # Hooks fire automatically on tool failures and session end,
+              # catching cases the agent's SOUL-based self-archiving might miss.
+              mkdir -p /home/node/hooks
+              if [ -d /hooks ]; then
+                cp /hooks/*.sh /home/node/hooks/ 2>/dev/null || true
+                chmod +x /home/node/hooks/*.sh 2>/dev/null || true
+              fi
+              # Write hooks config into .claude/settings.json
+              mkdir -p /home/node/.claude
+              cat > /home/node/.claude/settings.json << 'HOOKSCFG'
+{
+  "hooks": {
+    "PostToolUseFailure": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/node/hooks/alkb-failure-hook.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/node/hooks/alkb-stop-hook.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+HOOKSCFG
+              # [REQ-27.7] Deploy custom NAS skills
+              for SKILL_NAME in nas-write nas-read nas-index; do
+                mkdir -p "/home/node/.claude/skills/\${SKILL_NAME}"
+                if [ -f "/skills/\${SKILL_NAME}/SKILL.md" ]; then
+                  cp "/skills/\${SKILL_NAME}/SKILL.md" "/home/node/.claude/skills/\${SKILL_NAME}/SKILL.md"
+                fi
+              done
+              echo "Lifecycle hooks + NAS skills deployed"
               # [NF6] Write auth-profiles.json for each agent from mounted secrets.
               # openclaw looks for auth-profiles.json per-agent; without it all model calls fail.
               # Anthropic: prefer OAuth (Max plan subscription) over API key when available.
@@ -3295,6 +3546,8 @@ fi)
             - { name: api-secrets, mountPath: /run/secrets, readOnly: true }
             - { name: host-openclaw, mountPath: /host-openclaw, readOnly: true }
             - { name: claude-creds, mountPath: /creds/.credentials.json }
+            - { name: hooks, mountPath: /hooks, readOnly: true }
+            - { name: skills, mountPath: /skills, readOnly: true }
           resources:
             requests: { memory: "${gw_mem_request}", cpu: "${gw_cpu_request}" }
             limits: { memory: "${gw_mem_limit}", cpu: "${gw_cpu_limit}" }
@@ -3315,6 +3568,10 @@ fi)
           hostPath: { path: "${ocl_module_path}", type: Directory }
         - name: claude-creds
           hostPath: { path: /home/ocl/.claude/.credentials.json, type: File }
+        - name: hooks
+          hostPath: { path: ${OCL_DEPLOY}/hooks, type: DirectoryOrCreate }
+        - name: skills
+          hostPath: { path: ${OCL_DEPLOY}/skills, type: DirectoryOrCreate }
 ---
 apiVersion: v1
 kind: Service

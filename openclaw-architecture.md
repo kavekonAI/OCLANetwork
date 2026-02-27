@@ -865,6 +865,74 @@ Air-gapped agent (network: none):
 
 Since quant-trader has `network: none`, it writes visibility events to `ocl:visibility:quant-trader` in Redis. Commander includes this stream in its 60-second monitoring cycle and relays events to the quant-trader's Forum topic. This keeps the human informed without breaking the trading air-gap.
 
+### Native File Operations Protocol [REQ-27.1–27.3]
+
+The fifth universal SOUL block mandates that agents use OpenClaw's built-in sandboxed file tools instead of Bash file commands:
+
+| Operation | Mandated Tool | Forbidden Alternative |
+|-----------|--------------|----------------------|
+| Read file | `Read` | `cat`, `head`, `tail` |
+| Write file | `Write` | `echo >`, `cat <<EOF >` |
+| Edit file | `Edit` | `sed`, `awk` |
+| Find files | `Glob` | `find`, `ls -R` |
+| Search content | `Grep` | `grep`, `rg` |
+
+**Why this matters:** OpenClaw's sandbox mode (`off`/`non-main`/`ask`) restricts what **Bash** commands can do — file writes may silently fail in sandboxed shells. The native `Read`/`Write`/`Edit`/`Glob`/`Grep` tools bypass the Bash sandbox entirely (they have their own permission layer) and provide audit trails. This ensures agents can always access their storage paths regardless of sandbox mode.
+
+**SSD-first enforcement:** All agent SOULs specify `/home/ocl-local/agents/<id>/output/` as the write path (not `/mnt/nas/`). The `ocl-nas-sync` CronJob replicates to NAS every 5 minutes. NAS paths appear only as read sources for cross-agent data exchange (e.g., quant-trader reads market data from NAS).
+
+### Lifecycle Hooks — ALKB Safety Net [REQ-27.4–27.6]
+
+OpenClaw's hooks API provides 17 lifecycle events that fire automatically. Two hooks are deployed as a reliability safety net for ALKB archiving:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  ALKB Archiving: Primary + Safety Net                     │
+├──────────────────────────────────────────────────────────┤
+│                                                           │
+│  PRIMARY (SOUL instructions — has semantic context):      │
+│    Agent completes task → HSET ocl:learnings:fixed:*      │
+│    Agent fails task    → HSET ocl:learnings:failures:*    │
+│    Agent starts task   → memorySearch ALKB-FIX/ALKB-FAIL  │
+│                                                           │
+│  SAFETY NET (lifecycle hooks — fires automatically):      │
+│    PostToolUseFailure  → alkb-failure-hook.sh             │
+│      Archives tool failure to ocl:learnings:failures      │
+│      Tracks failure in /tmp/ocl-hook-failures/            │
+│                                                           │
+│    Stop                → alkb-stop-hook.sh                │
+│      Checks for unarchived failures this session          │
+│      Blocks with reminder if failures detected            │
+│                                                           │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Hook deployment path:**
+1. Wizard creates scripts in `$OCL_DEPLOY/hooks/` on the host
+2. Mounted into pod at `/hooks/` (readOnly)
+3. Startup script copies to `/home/node/hooks/` and sets executable
+4. Hooks config written to `/home/node/.claude/settings.json`
+5. OpenClaw reads settings.json and binds hooks to lifecycle events
+
+**Why both?** SOUL-based archiving has semantic understanding (error categories, task context, domain classification). Hooks fire mechanically on every tool failure regardless of SOUL compliance. Together they provide defense-in-depth for knowledge preservation.
+
+### Custom NAS Skills [REQ-27.7–27.8]
+
+Three custom skills abstract the NAS/SSD storage layer from agent prompts:
+
+| Skill | Invocation | Purpose |
+|-------|-----------|---------|
+| `nas-write` | `/nas-write reports/summary.md` | Write to SSD-first path + auto-index in Redis |
+| `nas-read` | `/nas-read reports/summary.md` | Read from SSD first, fall back to NAS |
+| `nas-index` | `/nas-index agent:researcher` | Search file index by agent, tag, or content |
+
+**Skill deployment path:** Same as hooks — wizard creates `SKILL.md` files in `$OCL_DEPLOY/skills/{name}/`, mounted into pod at `/skills/`, copied to `/home/node/.claude/skills/` at startup. OpenClaw auto-discovers skills from `.claude/skills/` directories.
+
+**Benefits:**
+- Agents invoke `/nas-write` instead of memorizing SSD-first paths and Redis indexing commands
+- Cross-agent file discovery via `/nas-index` without knowing other agents' directory structures
+- Storage architecture changes (path layout, sync frequency, index schema) only require skill updates, not SOUL rewrites
+
 ---
 
 ## Agent & Node Lifecycle Management

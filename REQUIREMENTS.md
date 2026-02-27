@@ -454,6 +454,20 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-26.8 | `x-scout` MUST require human approval via Telegram before posting tweets, replying to threads, or reposting — same approval workflow as trades (REQ-07.7 pattern) | MUST |
 | REQ-26.9 | X API v2 credentials (`X_API_KEY`, `X_API_SECRET`, `X_BEARER_TOKEN`) MUST be stored in K8s Secrets, never on disk | MUST |
 
+### REQ-27: Native OpenClaw Integration (File Tools, Hooks, Skills)
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-27.1 | All agent SOULs MUST include the File Operations Protocol block mandating use of OpenClaw's native `Read`/`Write`/`Edit`/`Glob`/`Grep` tools instead of Bash file commands (`cat`, `echo >`, `sed`, `find`) | MUST |
+| REQ-27.2 | Agents MUST write output to local SSD first (`/home/ocl-local/agents/<id>/output/`), never directly to NAS — `ocl-nas-sync` handles replication. Exception: air-gapped cross-agent data exchange (quant-trader ↔ market-data-fetcher via NAS) | MUST |
+| REQ-27.3 | Native file tools (`Read`/`Write`/`Edit`/`Glob`/`Grep`) work in all sandbox modes (off, non-main, ask); Bash file commands are subject to sandbox restrictions and may silently fail | MUST |
+| REQ-27.4 | OpenClaw lifecycle hooks deployed as ALKB safety net: `PostToolUseFailure` hook auto-archives tool failures to `ocl:learnings:failures`, `Stop` hook reminds agent to verify ALKB entries exist for session failures | MUST |
+| REQ-27.5 | Hook scripts deployed to `$OCL_DEPLOY/hooks/` on host, mounted into gateway pod at `/hooks/`, copied to `/home/node/hooks/` at startup | MUST |
+| REQ-27.6 | Hooks config written to `/home/node/.claude/settings.json` inside the container — OpenClaw reads this for lifecycle event binding | MUST |
+| REQ-27.7 | Three custom NAS skills deployed: `nas-write` (SSD-first write + Redis indexing), `nas-read` (SSD-first lookup + NAS fallback), `nas-index` (search files by agent/tag/content) | SHOULD |
+| REQ-27.8 | Skill SKILL.md files deployed to `$OCL_DEPLOY/skills/` on host, mounted into gateway pod at `/skills/`, copied to `/home/node/.claude/skills/` at startup | SHOULD |
+| REQ-27.9 | SOUL-based ALKB instructions remain as primary mechanism (they have semantic task context hooks lack); hooks serve as reliability safety net only | MUST |
+
 ---
 
 ## 3. Architecture Overview
@@ -819,12 +833,13 @@ ocl-nuke <target> [name] [--confirm=VALUE]
 
 ## 8. Universal SOUL Protocol Blocks (All Agents)
 
-Every agent SOUL.md includes four standardized universal blocks appended automatically by the wizard:
+Every agent SOUL.md includes five standardized universal blocks appended automatically by the wizard:
 
 1. **Recovery Protocol** [Gap E] — startup checks, task checkpointing, ALKB learning, DLP awareness [REQ-24.10]
 2. **Conversation Memory Protocol** — cross-session/cross-provider continuity via Redis memory stream
 3. **Provider Badge Protocol** [REQ-18] — mandatory model identity signature on every Telegram message
 4. **Group Visibility Protocol** [REQ-25] — lifecycle event posting to agent's Forum topic in OCLANGrp
+5. **File Operations Protocol** [REQ-27] — mandates native OpenClaw tools (Read/Write/Edit/Glob/Grep) instead of Bash file commands; enforces SSD-first write paths; exposes NAS skills (/nas-write, /nas-read, /nas-index)
 
 ### Recovery Protocol Detail
 
@@ -965,3 +980,6 @@ Check it's not already running (prevent duplicates):
 - [ ] Reddit and X API credentials stored in K8s Secrets only
 - [ ] Gateway startup script writes auth-profiles.json from secrets at runtime — OAuth tokens never baked into image
 - [ ] `~/.claude/.credentials.json` permissions 646 — readable/writable by gateway pod (uid 1000) and CronJob (root)
+- [ ] Agents use native OpenClaw file tools (Read/Write/Edit/Glob/Grep) — not Bash file commands — preserving sandbox guarantees
+- [ ] Lifecycle hooks deployed as ALKB safety net (PostToolUseFailure + Stop) — catches failures agents miss
+- [ ] Custom NAS skills (nas-write, nas-read, nas-index) abstract storage layer from agent prompts
