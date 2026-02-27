@@ -2623,7 +2623,7 @@ generate_openclaw_config() {
 {
   "gateway": {
     "mode": "local",
-    "bind": "localhost",
+    "bind": "loopback",
     "port": 18789,
     "auth": {
       "mode": "token",
@@ -2660,7 +2660,9 @@ generate_openclaw_config() {
       "groups": {
         "*": { "requireMention": false }
       }
-  }
+    }
+  },
+  "directMode": ${direct_mode}
 }
 OCEOF
     # [IF2] When optimizer is active, apiBase routes all LLM calls through LiteLLM proxy
