@@ -4740,6 +4740,247 @@ ENVEOF
     echo "Generated: $dest"
 }
 
+# ─── Interactive .env Generator ───────────────────────────────────────
+# Asks the user each question, validates input, writes a ready-to-use .env file.
+# Usage: bash setup-wizard.sh --interactive-env
+
+generate_env_interactive() {
+    local dest="${1:-.env}"
+
+    echo ""
+    echo -e "${CYAN}${BOLD}"
+    echo "  ╔═══════════════════════════════════════════════════════════════╗"
+    echo "  ║         Interactive .env Generator                           ║"
+    echo "  ║   Answer each question to build your deployment config       ║"
+    echo "  ╚═══════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    # ── 1. LLM API Keys ──
+    echo -e "${BOLD}─── LLM API Keys (at least one required) ───${NC}"
+    echo ""
+
+    local env_anthro="" env_oai="" env_goog="" env_deep=""
+
+    echo -e "  Anthropic API key ${DIM}(sk-ant-...)${NC}"
+    echo -e "  ${DIM}Get one at: https://console.anthropic.com/settings/keys${NC}"
+    read -rsp "  Key (Enter to skip): " env_anthro; echo ""
+
+    echo -e "  OpenAI API key ${DIM}(sk-...)${NC}"
+    echo -e "  ${DIM}Get one at: https://platform.openai.com/api-keys${NC}"
+    read -rsp "  Key (Enter to skip): " env_oai; echo ""
+
+    echo -e "  Google (Gemini) API key ${DIM}(AIza...)${NC}"
+    echo -e "  ${DIM}Get one at: https://aistudio.google.com/apikey${NC}"
+    read -rsp "  Key (Enter to skip): " env_goog; echo ""
+
+    echo -e "  DeepSeek API key ${DIM}(sk-...)${NC}"
+    echo -e "  ${DIM}Get one at: https://platform.deepseek.com/api_keys${NC}"
+    read -rsp "  Key (Enter to skip): " env_deep; echo ""
+
+    if [ -z "$env_anthro" ] && [ -z "$env_oai" ] && [ -z "$env_goog" ] && [ -z "$env_deep" ]; then
+        echo -e "  ${RED}At least one API key is required.${NC}"
+        exit 1
+    fi
+    echo -e "  ${GREEN}✓ API keys collected${NC}"
+    echo ""
+
+    # ── 2. NAS ──
+    echo -e "${BOLD}─── NAS Configuration ───${NC}"
+    echo ""
+
+    local env_nas_ip="" env_nas_path=""
+
+    echo -e "  NAS IP address ${DIM}(e.g. 192.168.1.50)${NC}"
+    read -rp "  IP: " env_nas_ip
+    while [ -z "$env_nas_ip" ]; do
+        echo -e "  ${RED}NAS IP is required.${NC}"
+        read -rp "  IP: " env_nas_ip
+    done
+
+    echo -e "  NAS export path ${DIM}(default: /volume1/openclaw-data)${NC}"
+    read -rp "  Path [/volume1/openclaw-data]: " env_nas_path
+    env_nas_path="${env_nas_path:-/volume1/openclaw-data}"
+
+    echo -e "  ${GREEN}✓ NAS: ${env_nas_ip}:${env_nas_path}${NC}"
+    echo ""
+
+    # ── 3. Telegram ──
+    echo -e "${BOLD}─── Telegram Configuration ───${NC}"
+    echo ""
+
+    local env_tg_token="" env_tg_group="" env_tg_user=""
+
+    echo -e "  Bot token ${DIM}(from @BotFather)${NC}"
+    read -rsp "  Token: " env_tg_token; echo ""
+    while [ -z "$env_tg_token" ]; do
+        echo -e "  ${RED}Bot token is required.${NC}"
+        read -rsp "  Token: " env_tg_token; echo ""
+    done
+
+    echo -e "  Group ID ${DIM}(negative number, e.g. -1001234567890)${NC}"
+    read -rp "  Group ID: " env_tg_group
+    while [ -z "$env_tg_group" ]; do
+        echo -e "  ${RED}Group ID is required.${NC}"
+        read -rp "  Group ID: " env_tg_group
+    done
+
+    echo -e "  Your Telegram user ID ${DIM}(from @userinfobot, optional — enables DM allowlist)${NC}"
+    read -rp "  User ID [Enter to skip]: " env_tg_user
+
+    echo -e "  ${GREEN}✓ Telegram configured${NC}"
+    echo ""
+
+    # ── 4. Agents ──
+    echo -e "${BOLD}─── Agent Selection ───${NC}"
+    echo -e "  ${DIM}Commander, Watchdog, Token Audit are always auto-added.${NC}"
+    echo ""
+    echo -e "  ${GREEN}[4]${NC} Content Creator    — YouTube/TikTok"
+    echo -e "  ${GREEN}[5]${NC} Quant Trader       — Trading (auto-adds Market Data Fetcher)"
+    echo -e "  ${GREEN}[6]${NC} Researcher         — AI paper research (cloud tier)"
+    echo -e "  ${GREEN}[7]${NC} LinkedIn Manager   — Social posting (cloud tier)"
+    echo -e "  ${GREEN}[8]${NC} Librarian          — Book archival (cloud tier)"
+    echo -e "  ${GREEN}[9]${NC} VIRS Trainer       — ML training (GPU tier)"
+    echo -e "  ${GREEN}[10]${NC} Reddit Scout      — Reddit intel + posting"
+    echo -e "  ${GREEN}[11]${NC} X Scout           — X/Twitter intel + posting"
+    echo ""
+
+    local env_agents_input=""
+    read -rp "  Select (comma-separated, e.g. 4,6,10): " env_agents_input
+
+    # Map numbers to agent names
+    local env_agents=()
+    IFS=',' read -ra sels <<< "$env_agents_input"
+    for s in "${sels[@]}"; do
+        s=$(echo "$s" | tr -d ' ')
+        case $s in
+            4) env_agents+=("content-creator") ;;
+            5) env_agents+=("quant-trader") ;;
+            6) env_agents+=("researcher") ;;
+            7) env_agents+=("linkedin-mgr") ;;
+            8) env_agents+=("librarian") ;;
+            9) env_agents+=("virs-trainer") ;;
+            10) env_agents+=("reddit-scout") ;;
+            11) env_agents+=("x-scout") ;;
+        esac
+    done
+    local agents_str
+    agents_str=$(IFS=','; echo "${env_agents[*]}")
+
+    echo -e "  ${GREEN}✓ Agents: commander, watchdog, token-audit${agents_str:+, ${agents_str}}${NC}"
+    echo ""
+
+    # ── 5. Optional settings ──
+    echo -e "${BOLD}─── Optional Settings ───${NC}"
+    echo ""
+
+    local env_budget="" env_tier="" env_optimizer=""
+
+    echo -e "  Monthly budget in USD ${DIM}(default: 300)${NC}"
+    read -rp "  Budget [\$300]: " env_budget
+    env_budget="${env_budget:-300}"
+
+    echo -e "  Gateway tier ${DIM}(home | cloud | gpu, default: home)${NC}"
+    read -rp "  Tier [home]: " env_tier
+    env_tier="${env_tier:-home}"
+
+    echo -e "  Enable Token Optimizer? ${DIM}(requires 16GB+ RAM, default: false)${NC}"
+    read -rp "  Optimizer [false]: " env_optimizer
+    env_optimizer="${env_optimizer:-false}"
+
+    echo -e "  ${GREEN}✓ Budget: \$${env_budget}/mo, Tier: ${env_tier}, Optimizer: ${env_optimizer}${NC}"
+    echo ""
+
+    # ── 6. Social API keys (if Reddit/X selected) ──
+    local env_reddit_id="" env_reddit_secret="" env_reddit_refresh=""
+    local env_x_key="" env_x_secret="" env_x_bearer=""
+
+    if [[ " ${env_agents[*]} " =~ " reddit-scout " ]]; then
+        echo -e "${BOLD}─── Reddit API (for Reddit Scout) ───${NC}"
+        echo -e "  ${DIM}Setup guide: https://www.reddit.com/prefs/apps${NC}"
+        echo ""
+        read -rp "  Reddit Client ID: " env_reddit_id
+        read -rsp "  Reddit Client Secret: " env_reddit_secret; echo ""
+        read -rsp "  Reddit Refresh Token: " env_reddit_refresh; echo ""
+        echo -e "  ${GREEN}✓ Reddit API configured${NC}"
+        echo ""
+    fi
+
+    if [[ " ${env_agents[*]} " =~ " x-scout " ]]; then
+        echo -e "${BOLD}─── X (Twitter) API (for X Scout) ───${NC}"
+        echo -e "  ${DIM}Setup guide: https://developer.x.com/${NC}"
+        echo ""
+        read -rp "  X API Key: " env_x_key
+        read -rsp "  X API Secret: " env_x_secret; echo ""
+        read -rsp "  X Bearer Token: " env_x_bearer; echo ""
+        echo -e "  ${GREEN}✓ X API configured${NC}"
+        echo ""
+    fi
+
+    # ── Write .env file ──
+    {
+        echo "# OCL Setup Wizard — Generated by --interactive-env"
+        echo "# $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "#"
+        echo "# Deploy with: bash setup-wizard.sh --env ${dest}"
+        echo ""
+        echo "# ─── LLM API Keys ─────────────────────────────────────────────────"
+        [ -n "$env_anthro" ] && echo "ANTHROPIC_API_KEY=${env_anthro}"
+        [ -n "$env_oai" ]    && echo "OPENAI_API_KEY=${env_oai}"
+        [ -n "$env_goog" ]   && echo "GOOGLE_API_KEY=${env_goog}"
+        [ -n "$env_deep" ]   && echo "DEEPSEEK_API_KEY=${env_deep}"
+        echo ""
+        echo "# ─── NAS ───────────────────────────────────────────────────────────"
+        echo "NAS_IP=${env_nas_ip}"
+        echo "NAS_PATH=${env_nas_path}"
+        echo ""
+        echo "# ─── Telegram ──────────────────────────────────────────────────────"
+        echo "TELEGRAM_BOT_TOKEN=${env_tg_token}"
+        echo "TELEGRAM_GROUP_ID=${env_tg_group}"
+        [ -n "$env_tg_user" ] && echo "TELEGRAM_USER_ID=${env_tg_user}"
+        echo ""
+        echo "# ─── Agents ────────────────────────────────────────────────────────"
+        echo "AGENTS=${agents_str}"
+        echo ""
+        echo "# ─── Settings ──────────────────────────────────────────────────────"
+        echo "MONTHLY_BUDGET=${env_budget}"
+        echo "GATEWAY_TIER=${env_tier}"
+        echo "OPTIMIZER_ENABLED=${env_optimizer}"
+        if [ -n "$env_reddit_id" ]; then
+            echo ""
+            echo "# ─── Reddit API ────────────────────────────────────────────────────"
+            echo "REDDIT_CLIENT_ID=${env_reddit_id}"
+            echo "REDDIT_CLIENT_SECRET=${env_reddit_secret}"
+            echo "REDDIT_REFRESH_TOKEN=${env_reddit_refresh}"
+        fi
+        if [ -n "$env_x_key" ]; then
+            echo ""
+            echo "# ─── X (Twitter) API ───────────────────────────────────────────────"
+            echo "X_API_KEY=${env_x_key}"
+            echo "X_API_SECRET=${env_x_secret}"
+            echo "X_BEARER_TOKEN=${env_x_bearer}"
+        fi
+    } > "$dest"
+
+    # Restrict permissions — secrets inside
+    chmod 600 "$dest"
+
+    echo -e "  ${GREEN}${BOLD}✓ .env written to: ${dest}${NC}"
+    echo -e "  ${DIM}(file permissions: 600 — owner read/write only)${NC}"
+    echo ""
+    echo -e "  ${BOLD}Next steps:${NC}"
+    echo -e "    ${GREEN}bash setup-wizard.sh --env ${dest}${NC}  — deploy now"
+    echo -e "    ${DIM}The .env file is automatically shredded after deployment.${NC}"
+    echo ""
+
+    # Offer to deploy immediately
+    read -rp "  Deploy now? [y/N]: " deploy_now
+    if [[ "$deploy_now" =~ ^[Yy] ]]; then
+        echo ""
+        # Re-exec with --env flag
+        exec bash "$0" --env "$dest"
+    fi
+}
+
 # ═══════════════════════════════════════════════════════════════════════
 # UNATTENDED HELPER FUNCTIONS (for --env mode)
 # ═══════════════════════════════════════════════════════════════════════
@@ -5054,7 +5295,8 @@ main() {
                 if [[ $# -lt 2 || -z "${2:-}" ]]; then
                     echo -e "${RED}Error: --env requires a file path${NC}"
                     echo "Usage: bash setup-wizard.sh --env /path/to/.env"
-                    echo "       bash setup-wizard.sh --generate-env   # create .env.example template"
+                    echo "       bash setup-wizard.sh --generate-env       # create .env.example template"
+                    echo "       bash setup-wizard.sh --interactive-env    # guided .env builder"
                     exit 1
                 fi
                 ENV_FILE="$2"
@@ -5066,10 +5308,15 @@ main() {
                 echo "Edit .env.example, then run: bash setup-wizard.sh --env .env.example"
                 exit 0
                 ;;
+            --interactive-env)
+                generate_env_interactive ".env"
+                exit 0
+                ;;
             *)
                 echo -e "${RED}Unknown option: $1${NC}"
                 echo "Usage: bash setup-wizard.sh [--env /path/to/.env]"
-                echo "       bash setup-wizard.sh --generate-env   # create .env.example template"
+                echo "       bash setup-wizard.sh --generate-env       # create .env.example template"
+                echo "       bash setup-wizard.sh --interactive-env    # guided .env builder"
                 exit 1
                 ;;
         esac
@@ -5347,7 +5594,8 @@ main() {
     echo -e "    ${GREEN}ocl-nuke all --confirm='NUKE ALL'${NC}  Nuclear option"
     echo ""
     echo -e "  ${BOLD}Unattended Deploy:${NC}"
-    echo -e "    ${GREEN}bash setup-wizard.sh --env .env${NC}  One-click deploy from .env file"
+    echo -e "    ${GREEN}bash setup-wizard.sh --interactive-env${NC}  Guided .env builder"
+    echo -e "    ${GREEN}bash setup-wizard.sh --env .env${NC}        One-click deploy from .env file"
     echo ""
     echo -e "  ${BOLD}To scale later:${NC}"
     echo -e "    Run ${CYAN}bash setup-wizard.sh${NC} again — detects existing state,"
