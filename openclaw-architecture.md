@@ -827,6 +827,7 @@ Instead of a blanket `sandbox.mode: "ask"` for all agents, each agent's sandbox 
 | reddit-scout | `ask` | External-facing: Reddit posts/comments need human approval |
 | x-scout | `ask` | External-facing: tweets/replies need human approval |
 | quant-trader | `off` | Air-gapped: `network: none` NetworkPolicy provides isolation |
+| virs-trainer | `ask` | GPU training: ephemeral pod, needs approval for resource operations |
 | *(new agents)* | `ask` | Safe default from `agents.defaults` |
 
 **Security note:** Quant-trader's `sandbox: "off"` is safe ONLY because its Kubernetes NetworkPolicy blocks all network access. If `network: none` is ever relaxed, sandbox MUST be changed to `"ask"`.

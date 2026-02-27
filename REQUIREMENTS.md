@@ -406,7 +406,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| REQ-24.7 | Agent sandbox modes MUST be set per-agent based on risk profile: `commander: "non-main"` (orchestrates freely, sub-tasks sandboxed), `watchdog/token-audit/market-data-fetcher/researcher/librarian: "off"` (read-only operations), `content-creator/linkedin-mgr: "ask"` (external-facing writes need approval), `quant-trader: "off"` (already air-gapped via `network: none`) — this supersedes the blanket `sandbox.mode: "ask"` from REQ-07.09 | MUST |
+| REQ-24.7 | Agent sandbox modes MUST be set per-agent based on risk profile: `commander: "non-main"` (orchestrates freely, sub-tasks sandboxed), `watchdog/token-audit/market-data-fetcher/researcher/librarian: "off"` (read-only operations), `content-creator/linkedin-mgr/reddit-scout/x-scout/virs-trainer: "ask"` (external-facing writes or GPU resource ops need approval), `quant-trader: "off"` (already air-gapped via `network: none`) — this supersedes the blanket `sandbox.mode: "ask"` from REQ-07.09 | MUST |
 | REQ-24.8 | `agents.defaults.sandbox.mode` MUST remain `"ask"` as a safe fallback for any newly added agents not yet in the risk matrix | MUST |
 | REQ-24.9 | Quant-trader's `sandbox.mode: "off"` relies on its `network: none` Kubernetes NetworkPolicy for isolation — if the network policy is ever relaxed, sandbox MUST be changed to `"ask"` | MUST |
 
