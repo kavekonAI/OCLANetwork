@@ -493,7 +493,7 @@ curl -s https://api.anthropic.com/v1/messages \
 
 ## 7. Telegram Bot Setup
 
-Telegram is used for agent status alerts, task completions, cost warnings, and security notifications.
+Telegram serves as the human-visible audit trail for ALL agent activity (REQ-02). Every agent posts task lifecycle events to the group so you can observe delegations, handoffs, completions, and failures in real-time.
 
 ### Step 7.1: Create a Telegram Bot
 
@@ -502,12 +502,20 @@ Telegram is used for agent status alerts, task completions, cost warnings, and s
 3. Choose a name (e.g., "OCL Agent Network")
 4. Choose a username (e.g., `ocl_agent_bot`)
 5. Copy the **bot token** (looks like `123456789:ABCdefGHI-jklMNOpqrsTUVwxyz`)
+6. **Disable privacy mode**: Send `/setprivacy` to BotFather → select your bot → `Disable`
+   - Without this, the bot cannot read plain group messages (only commands and @mentions)
+   - If the bot is already in a group, it must **leave and rejoin** for the change to take effect
 
-### Step 7.2: Create a Telegram Group
+### Step 7.2: Create the Telegram Group (OCLANGrp)
 
-1. Create a new Telegram group (e.g., "OCL Alerts")
-2. Add your bot to the group
-3. Send a test message in the group
+1. Create a new Telegram group named **"OCLANGrp"** (or your preferred name)
+2. **Enable Forum Topics**: Group Settings → Topics → Enable
+3. Add your bot to the group
+4. Create per-agent Forum topics named after each agent ID:
+   `commander`, `watchdog`, `token-audit`, `content-creator`, `market-data-fetcher`,
+   `researcher`, `linkedin-mgr`, `librarian`, `quant-trader`, `virs-training`
+5. Create cross-cutting topics: `#System`, `#Security`, `#Dashboard`
+6. Send a test message in the group
 
 ### Step 7.3: Get the Group ID
 

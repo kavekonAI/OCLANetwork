@@ -738,22 +738,27 @@ The wizard generates both (2) and (3) automatically. (1) must be done manually i
 
 
 ```
-Private Group: "OCL Agent Network"
-├── 📌 General          (Commander announcements)
-├── 🛡️ Watchdog         (health alerts, failover notices)
-├── 💰 Token-Audit      (cost alerts, runaway warnings)
-├── 🔒 Security         (HMAC failures, unauthorized access attempts)
-├── 🛂 Egress-DLP       (sanitization events, blocked endpoints)
-├── 🎬 Content-Creator   (video pipeline)
-├── 📊 Market-Data       (data fetch status)
-├── 🔬 Researcher       (paper discoveries)
-├── 💼 LinkedIn          (post drafts & approvals)
-├── 📚 Librarian        (archive acquisitions)
-├── 📈 Quant-Trader     (signals & analysis)
-├── 🧠 VIRS-Trainer     (training progress)
-├── ⚙️ System           (health, errors, rate limits)
-└── 📊 Dashboard        (daily summaries, costs)
+Private Group: "OCLANGrp" (Forum Topics enabled)
+
+Per-agent topics (named by agent ID — REQ-02.3):
+├── commander            (task delegation, results, Strike Team summaries)
+├── watchdog             (health alerts, failover notices)
+├── token-audit          (cost alerts, runaway warnings, daily summaries)
+├── content-creator      (video pipeline, content drafts)
+├── market-data-fetcher  (data fetch status)
+├── researcher           (paper discoveries, research results)
+├── linkedin-mgr         (post drafts & approvals)
+├── librarian            (archive acquisitions, index updates)
+├── quant-trader         (signals & analysis — relayed by Commander via REQ-02.8)
+└── virs-training        (training progress — relayed by Commander via REQ-02.8)
+
+Cross-cutting topics (specialized concerns):
+├── #System              (Watchdog: health, errors, rate limits, subscription status)
+├── #Security            (Watchdog: HMAC failures, blacklist hits, unauthorized access)
+└── #Dashboard           (Token-Audit: daily cost summaries)
 ```
+
+All agents post lifecycle events (received, progress, completed, failed, handoff) to their own topic via the Group Visibility Protocol [REQ-25]. Air-gapped agents write to `ocl:visibility:<id>` Redis stream; Commander relays every 60s.
 
 ---
 
@@ -781,9 +786,16 @@ ocl-nuke <target> [name] [--confirm=VALUE]
 
 ---
 
-## 8. Universal Recovery Protocol (All Agents)
+## 8. Universal SOUL Protocol Blocks (All Agents)
 
-Every agent SOUL.md includes this standardized block:
+Every agent SOUL.md includes four standardized universal blocks appended automatically by the wizard:
+
+1. **Recovery Protocol** [Gap E] — startup checks, task checkpointing, ALKB learning, DLP awareness [REQ-24.10]
+2. **Conversation Memory Protocol** — cross-session/cross-provider continuity via Redis memory stream
+3. **Provider Badge Protocol** [REQ-18] — mandatory model identity signature on every Telegram message
+4. **Group Visibility Protocol** [REQ-25] — lifecycle event posting to agent's Forum topic in OCLANGrp
+
+### Recovery Protocol Detail
 
 ```
 ## On Every Startup
