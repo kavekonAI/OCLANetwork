@@ -3076,6 +3076,12 @@ if (funcStart > -1 && funcEnd > 0) {
     # refresh token; if token-sync.js can't persist the new one, on-disk token is invalidated
     [ -f "${HOME}/.claude/.credentials.json" ] && chmod 666 "${HOME}/.claude/.credentials.json" 2>/dev/null || true
 
+    # [REQ-28] Persistent agent state directory — sessions, memory, workspace state survive pod restarts.
+    # Without this, .openclaw is ephemeral (container layer) and agents lose all conversation history
+    # and accumulated memories on every restart. Mounted at /home/node/.openclaw in the pod.
+    mkdir -p /home/ocl-local/openclaw-state 2>/dev/null || sudo mkdir -p /home/ocl-local/openclaw-state
+    sudo chown 1000:1000 /home/ocl-local/openclaw-state 2>/dev/null || true
+
     # [REQ-27.4] Create lifecycle hook scripts on host for container mount
     mkdir -p "${OCL_DEPLOY}/hooks"
     cat > "${OCL_DEPLOY}/hooks/alkb-failure-hook.sh" << 'HOOK_FAIL_EOF'
@@ -3267,17 +3273,18 @@ spec:
         runAsUser: 1000
         fsGroup: 1000
       initContainers:
-        - name: nas-chmod
+        - name: init-permissions
           image: ${node_img}
-          # Runs as root to ensure NAS root dir is accessible by uid=1000.
-          # Synology NFSv4 ACLs can block the owner UID even on 0777 dirs;
-          # chmod a+rx from root bypasses the ACL restriction at mount time.
-          command: [sh, -c, "chmod a+rx /mnt/nas || true"]
+          # Runs as root to fix mount permissions before main container starts:
+          # 1. NAS: Synology NFSv4 ACLs can block uid=1000 even on 0777 dirs
+          # 2. openclaw-state: DirectoryOrCreate makes root-owned dir; chown to uid=1000
+          command: [sh, -c, "chmod a+rx /mnt/nas || true; chown 1000:1000 /state || true"]
           securityContext:
             runAsUser: 0
             allowPrivilegeEscalation: false
           volumeMounts:
             - { name: nas, mountPath: /mnt/nas, mountPropagation: HostToContainer }
+            - { name: openclaw-state, mountPath: /state }
       containers:
         - name: openclaw
           image: ${node_img}
@@ -3312,7 +3319,7 @@ PROXY_INIT_EOF
               cp /souls/*.md /home/node/.openclaw/ 2>/dev/null || true
               # Copy souls to workspace dirs — openclaw reads workspace-{agent}/SOUL.md not top-level
               # Also seed workspace-state.json so openclaw skips the BOOTSTRAP onboarding flow
-              # (workspace is ephemeral; without this, agents enter "new agent setup" on every pod restart)
+              # (.openclaw is now persistent via hostPath mount; workspace-state is only seeded once)
               BOOT_TS=\$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
               for SOUL_FILE in /souls/*.md; do
                 AGENT_ID=\$(basename "\$SOUL_FILE" .md)
@@ -3325,6 +3332,41 @@ PROXY_INIT_EOF
                     "\$BOOT_TS" "\$BOOT_TS" > "\${WS_DIR}/.openclaw/workspace-state.json"
                 fi
               done
+              # [REQ-28] Seed MEMORY.md with identity baseline — only on first boot.
+              # Without this, memory_search returns nothing and agents can't recall who they are.
+              # Persistent .openclaw mount ensures these survive subsequent restarts.
+              seed_memory() {
+                local ws="/home/node/.openclaw/workspace-\$1"
+                [ ! -d "\${ws}" ] && return 0   # agent not deployed — skip
+                [ -f "\${ws}/MEMORY.md" ] && return 0
+                cat > "\${ws}/MEMORY.md" << MEMEOF
+# Agent Identity: \$2
+
+I am **\$2**, part of the OCL Agent Network (OCLAN).
+Owner: Sid V (@sidv135 on Telegram, chat ID 6968715300).
+
+## My Role
+\$3
+
+## Key Facts
+- Network: OCLAN (13 agents on k3s single-node cluster)
+- Orchestrator: Commander agent (receives Telegram DMs, delegates tasks)
+- Storage: SSD-first writes (/home/ocl-local/), auto-synced to NAS (/mnt/nas/)
+- Coordination: Redis streams for inter-agent tasks
+- My sessions and memories persist across restarts
+MEMEOF
+              }
+              seed_memory "commander" "Commander" "Primary orchestrator. I receive instructions from Sid via Telegram and delegate to specialist agents. I route tasks via Redis streams, not direct messages."
+              seed_memory "watchdog" "Watchdog" "Lightweight failover coordinator. I monitor Commander heartbeats and take over simple routing if Commander goes down."
+              seed_memory "token-audit" "Token Audit" "Cost watchdog. I track API token usage across all agents every 30 minutes and alert on budget anomalies."
+              seed_memory "content-creator" "Content Creator" "I create and manage video content for YouTube and TikTok."
+              seed_memory "researcher" "AI Researcher" "I find, read, and summarize cutting-edge AI research papers from arXiv, Semantic Scholar, HuggingFace Papers, and OpenReview."
+              seed_memory "linkedin-mgr" "LinkedIn Manager" "I manage professional AI content on LinkedIn."
+              seed_memory "librarian" "Library Archivist" "I build a searchable knowledge library from open-access sources (archive.org, Open Library, Project Gutenberg)."
+              seed_memory "virs-trainer" "VIRS Trainer" "I manage VIRS model training pipelines."
+              seed_memory "reddit-scout" "Reddit Scout" "Dual-purpose intelligence and distribution agent for Reddit. I monitor subreddits and distribute approved content."
+              seed_memory "x-scout" "X Scout" "Dual-purpose intelligence and distribution agent for X (Twitter). I monitor accounts/hashtags and distribute approved content."
+              echo "Agent MEMORY.md files seeded (identity baseline)"
               # [REQ-27.4] Deploy lifecycle hooks for ALKB safety net
               # Hooks fire automatically on tool failures and session end,
               # catching cases the agent's SOUL-based self-archiving might miss.
@@ -3550,6 +3592,7 @@ fi)
             - { name: api-secrets, mountPath: /run/secrets, readOnly: true }
             - { name: host-openclaw, mountPath: /host-openclaw, readOnly: true }
             - { name: claude-creds, mountPath: /creds, readOnly: false }
+            - { name: openclaw-state, mountPath: /home/node/.openclaw }
             - { name: hooks, mountPath: /hooks, readOnly: true }
             - { name: skills, mountPath: /skills, readOnly: true }
           resources:
@@ -3572,6 +3615,8 @@ fi)
           hostPath: { path: "${ocl_module_path}", type: Directory }
         - name: claude-creds
           hostPath: { path: /home/ocl/.claude, type: Directory }
+        - name: openclaw-state
+          hostPath: { path: /home/ocl-local/openclaw-state, type: DirectoryOrCreate }
         - name: hooks
           hostPath: { path: ${OCL_DEPLOY}/hooks, type: DirectoryOrCreate }
         - name: skills

@@ -473,6 +473,17 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-27.8 | Skill SKILL.md files deployed to `$OCL_DEPLOY/skills/` on host, mounted into gateway pod at `/skills/`, copied to `/home/node/.claude/skills/` at startup | SHOULD |
 | REQ-27.9 | SOUL-based ALKB instructions remain as primary mechanism (they have semantic task context hooks lack); hooks serve as reliability safety net only | MUST |
 
+### REQ-28: Persistent Agent State Across Restarts
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-28.1 | Agent state directory (`/home/node/.openclaw/`) MUST be mounted via hostPath to `/home/ocl-local/openclaw-state/` so sessions, memory files, and workspace state survive pod restarts | MUST |
+| REQ-28.2 | Init container (`init-permissions`) MUST run as root to `chown 1000:1000` the state directory (DirectoryOrCreate creates root-owned dirs) and `chmod a+rx` the NAS mount | MUST |
+| REQ-28.3 | Startup script MUST use idempotent operations: `mkdir -p` (safe on existing dirs), `if [ ! -f ]` guards (preserve existing workspace-state/memory), `cp` for config/SOULs (always pick up changes) | MUST |
+| REQ-28.4 | Each agent workspace MUST have a seeded `MEMORY.md` with identity baseline (name, role, owner, network facts) — only created if the file doesn't already exist | MUST |
+| REQ-28.5 | `seed_memory()` MUST skip agents whose workspace doesn't exist (not all agents are deployed on every tier) | MUST |
+| REQ-28.6 | Session JSONL files in `/home/node/.openclaw/agents/*/sessions/` persist across restarts — conversation history is NOT lost | MUST |
+| REQ-28.7 | Agent-accumulated MEMORY.md additions persist across restarts — agents retain learned facts and preferences | MUST |
+
 ---
 
 ## 3. Architecture Overview
