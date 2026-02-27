@@ -1741,10 +1741,24 @@ deploy_dashboard() {
     local dash_token
     dash_token=$(openssl rand -hex 32)
 
-    # Apply Secret
+    # Detect Tailscale SSO user (installer's login email)
+    local ts_users=""
+    if command -v tailscale &>/dev/null && tailscale status &>/dev/null 2>&1; then
+        ts_users=$(tailscale status --json 2>/dev/null | \
+            python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+uid=str(d.get('Self',{}).get('UserID',''))
+login=d.get('User',{}).get(uid,{}).get('LoginName','')
+print(login)
+" 2>/dev/null || echo "")
+    fi
+
+    # Apply Secret (token + optional Tailscale SSO allowlist)
     kubectl create secret generic dashboard-token \
         -n ocl-services \
         --from-literal=DASHBOARD_TOKEN="${dash_token}" \
+        --from-literal=DASHBOARD_TAILSCALE_USERS="${ts_users}" \
         --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
 
     # Apply RBAC + Deployment + Service
@@ -1815,6 +1829,11 @@ spec:
                 secretKeyRef:
                   name: dashboard-token
                   key: DASHBOARD_TOKEN
+            - name: DASHBOARD_TAILSCALE_USERS
+              valueFrom:
+                secretKeyRef:
+                  name: dashboard-token
+                  key: DASHBOARD_TAILSCALE_USERS
           ports:
             - containerPort: 3000
           resources:
@@ -1855,10 +1874,27 @@ DASHEOF
     # Update state
     sedi "s|dashboard: { deployed: false }|dashboard: { deployed: true }|" "${OCL_STATE}" 2>/dev/null || true
 
+    # Set up Tailscale Serve for SSO (zero-login via identity headers)
+    if [ -n "$ts_users" ] && command -v tailscale &>/dev/null; then
+        tailscale serve --bg --set-path / https+insecure://localhost:30780 >/dev/null 2>&1 && {
+            local ts_hostname
+            ts_hostname=$(tailscale status --json 2>/dev/null | \
+                python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
+            if [ -n "$ts_hostname" ]; then
+                ok "Tailscale SSO enabled → https://${ts_hostname}/"
+                info "Zero-login for: ${ts_users}"
+            fi
+        } || warn "tailscale serve setup failed — SSO disabled. Direct access at :30780 still works."
+    fi
+
     echo ""
     ok "Dashboard deployed → http://$(hostname -I | awk '{print $1}'):30780"
     info "Dashboard token: ${dash_token}"
     info "(Also: kubectl get secret dashboard-token -n ocl-services -o jsonpath='{.data.DASHBOARD_TOKEN}' | base64 -d)"
+    if [ -n "$ts_users" ]; then
+        info "Tailscale SSO: zero-login for ${ts_users}"
+        info "Add more SSO users: kubectl edit secret dashboard-token -n ocl-services"
+    fi
 
     # Zero out token var
     dash_token=""

@@ -45,7 +45,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| REQ-03.1 | Web-based dashboard accessible via Tailscale only; served on NodePort 30780; protected by Bearer token (32-byte hex, stored in k8s Secret `dashboard-token`); token entered via login form and stored in `sessionStorage` (never injected into HTML) | MUST |
+| REQ-03.1 | Web-based dashboard accessible via Tailscale only; served on NodePort 30780; dual auth: (1) Tailscale SSO via `tailscale serve` identity headers (`Tailscale-User-Login` allowlist in `DASHBOARD_TAILSCALE_USERS` env) for zero-login, (2) Bearer token fallback via login form + `sessionStorage`; token never injected into HTML | MUST |
 | REQ-03.2 | Real-time via WebSocket + Redis XREAD BLOCK on ocl:security:audit and ocl:dlp:log; agent status polled every 15s | MUST |
 | REQ-03.3 | Agent list sourced from `openclaw-home-config` ConfigMap; liveness derived from `deployment/gateway-home` `availableReplicas >= 1` via k8s API (10s cache); status overlaid from `ocl:agent-status:*` hash. Note: openclaw does NOT write `ocl:heartbeat:*` Redis keys — the `[heartbeat] started` log line is the Telegram ping feature, not a Redis heartbeat | MUST |
 | REQ-03.4 | Token usage graphs via LiteLLM API — **Phase 1 only** (panel hidden until LiteLLM detected at litellm-service:4000/health) | MUST |

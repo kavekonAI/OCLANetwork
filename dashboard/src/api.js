@@ -27,6 +27,12 @@ export async function verifyToken(token) {
   return r.ok;
 }
 
+export async function whoami() {
+  const r = await fetch('/api/auth/whoami', { headers: headers() });
+  if (!r.ok) return null;
+  return r.json();
+}
+
 function headers() {
   const t = getToken();
   return t ? { Authorization: `Bearer ${t}` } : {};

@@ -10,6 +10,8 @@ const Redis = require('ioredis');
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const DASHBOARD_TOKEN = process.env.DASHBOARD_TOKEN || '';
+const DASHBOARD_TAILSCALE_USERS = (process.env.DASHBOARD_TAILSCALE_USERS || '')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const K8S_TOKEN_FILE = '/var/run/secrets/kubernetes.io/serviceaccount/token';
 const K8S_CA_FILE = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt';
 const K8S_NAMESPACE_FILE = '/var/run/secrets/kubernetes.io/serviceaccount/namespace';
@@ -219,9 +221,26 @@ async function readDLPStream() {
 
 // ── Auth middleware ────────────────────────────────────────────────────────
 function auth(req, res, next) {
+  // Path 1: Tailscale identity headers (injected by tailscale serve)
+  const tsLogin = req.headers['tailscale-user-login'];
+  if (tsLogin && DASHBOARD_TAILSCALE_USERS.length > 0) {
+    if (DASHBOARD_TAILSCALE_USERS.includes(tsLogin.toLowerCase())) {
+      req.authMethod = 'tailscale';
+      req.authUser = {
+        login: tsLogin,
+        name: req.headers['tailscale-user-name'] || '',
+        pic: req.headers['tailscale-user-profile-pic'] || '',
+      };
+      return next();
+    }
+  }
+  // Path 2: Bearer token
   if (!DASHBOARD_TOKEN) return next(); // no token configured — open (dev)
   const h = req.headers['authorization'] || '';
-  if (h === `Bearer ${DASHBOARD_TOKEN}`) return next();
+  if (h === `Bearer ${DASHBOARD_TOKEN}`) {
+    req.authMethod = 'token';
+    return next();
+  }
   res.status(401).json({ error: 'Unauthorized' });
 }
 
@@ -251,6 +270,19 @@ app.post('/api/auth/verify', (req, res) => {
   if (!DASHBOARD_TOKEN) return res.json({ valid: true }); // no token configured (dev)
   if (token === DASHBOARD_TOKEN) return res.json({ valid: true });
   res.status(401).json({ valid: false });
+});
+
+// ── API: Auth whoami (Tailscale SSO probe) ─────────────────────────────────
+app.get('/api/auth/whoami', auth, (req, res) => {
+  if (req.authMethod === 'tailscale') {
+    return res.json({
+      method: 'tailscale',
+      login: req.authUser.login,
+      name: req.authUser.name,
+      pic: req.authUser.pic,
+    });
+  }
+  res.json({ method: req.authMethod || 'none' });
 });
 
 // Static assets (JS/CSS bundles — no token injection needed)
@@ -566,16 +598,25 @@ const server = http.createServer(app);
 server.on('upgrade', (req, socket, head) => {
   const [pathname, qs] = (req.url || '').split('?');
   if (pathname === '/ws') {
-    // Auth check on upgrade
-    if (DASHBOARD_TOKEN) {
+    let authorized = false;
+    // Path 1: Tailscale identity headers
+    const tsLogin = req.headers['tailscale-user-login'];
+    if (tsLogin && DASHBOARD_TAILSCALE_USERS.length > 0) {
+      if (DASHBOARD_TAILSCALE_USERS.includes(tsLogin.toLowerCase())) authorized = true;
+    }
+    // Path 2: Bearer token
+    if (!authorized && DASHBOARD_TOKEN) {
       const params = new URLSearchParams(qs || '');
       const token = params.get('token');
       const authHeader = req.headers['authorization'] || '';
-      if (token !== DASHBOARD_TOKEN && authHeader !== `Bearer ${DASHBOARD_TOKEN}`) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
-      }
+      if (token === DASHBOARD_TOKEN || authHeader === `Bearer ${DASHBOARD_TOKEN}`) authorized = true;
+    }
+    // Path 3: Dev mode (no token configured)
+    if (!authorized && !DASHBOARD_TOKEN) authorized = true;
+    if (!authorized) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req);
@@ -595,6 +636,9 @@ setInterval(() => {
 // ── Start ──────────────────────────────────────────────────────────────
 server.listen(PORT, () => {
   console.log(`Dashboard listening on :${PORT}`);
+  if (DASHBOARD_TAILSCALE_USERS.length > 0) {
+    console.log(`Tailscale SSO enabled for: ${DASHBOARD_TAILSCALE_USERS.join(', ')}`);
+  }
   // Start stream readers (non-blocking async loops)
   readSecurityStream().catch(() => {});
   readDLPStream().catch(() => {});

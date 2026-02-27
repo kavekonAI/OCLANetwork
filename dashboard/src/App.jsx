@@ -6,7 +6,7 @@ import SecurityLog from './components/SecurityLog.jsx'
 import DLPLog from './components/DLPLog.jsx'
 import ALKBTab from './components/ALKBTab.jsx'
 import ManagementTab from './components/ManagementTab.jsx'
-import { useWebSocket, hasToken, setToken, verifyToken } from './api.js'
+import { useWebSocket, hasToken, setToken, verifyToken, whoami } from './api.js'
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
@@ -87,13 +87,32 @@ function Login({ onLogin }) {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState(hasToken())
+  const [authed, setAuthed] = useState(false)
+  const [authChecking, setAuthChecking] = useState(true)
+  const [authUser, setAuthUser] = useState(null)
   const [tab, setTab] = useState('overview')
   const [wsEvents, setWsEvents] = useState([])
 
+  // Auto-login: try whoami on mount (handles Tailscale SSO + stored token)
+  useEffect(() => {
+    let cancelled = false
+    async function tryAutoLogin() {
+      try {
+        const info = await whoami()
+        if (!cancelled && info) {
+          setAuthUser(info)
+          setAuthed(true)
+        }
+      } catch {}
+      if (!cancelled) setAuthChecking(false)
+    }
+    tryAutoLogin()
+    return () => { cancelled = true }
+  }, [])
+
   // Listen for auth expiry from api.js (401 responses)
   useEffect(() => {
-    const handler = () => setAuthed(false)
+    const handler = () => { setAuthed(false); setAuthUser(null) }
     window.addEventListener('oclan-auth-expired', handler)
     return () => window.removeEventListener('oclan-auth-expired', handler)
   }, [])
@@ -106,17 +125,36 @@ export default function App() {
 
   const wsConnected = useWebSocket(handleWsMessage)
 
-  if (!authed) {
+  if (authChecking) {
     return (
       <>
         <style>{styles}</style>
-        <Login onLogin={() => setAuthed(true)} />
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
+          <div style={{ color: '#8b949e', fontSize: 14 }}>Checking authentication...</div>
+        </div>
+      </>
+    )
+  }
+
+  if (!authed) {
+    const handleLogin = async () => {
+      try {
+        const info = await whoami()
+        setAuthUser(info)
+      } catch {}
+      setAuthed(true)
+    }
+    return (
+      <>
+        <style>{styles}</style>
+        <Login onLogin={handleLogin} />
       </>
     )
   }
 
   const handleLogout = () => {
     setToken(null)
+    setAuthUser(null)
     setAuthed(false)
   }
 
@@ -131,6 +169,17 @@ export default function App() {
         <div style={{ background: '#161b22', borderBottom: '1px solid #30363d', padding: '0 20px', display: 'flex', alignItems: 'center', gap: 20 }}>
           <div style={{ padding: '12px 0', fontWeight: 700, fontSize: 16, color: '#58a6ff' }}>OCLAN Dashboard</div>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
+            {authUser?.method === 'tailscale' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {authUser.pic && (
+                  <img src={authUser.pic} alt="" style={{ width: 24, height: 24, borderRadius: '50%' }} />
+                )}
+                <span style={{ fontSize: 13, color: '#8b949e' }}>{authUser.name || authUser.login}</span>
+              </div>
+            )}
+            {authUser?.method === 'token' && (
+              <span style={{ fontSize: 12, color: '#8b949e' }}>Token auth</span>
+            )}
             <div style={{ fontSize: 12, color: wsConnected ? '#3fb950' : '#f85149' }}>
               {wsConnected ? 'Live' : 'Reconnecting...'}
             </div>
