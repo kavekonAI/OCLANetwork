@@ -298,7 +298,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 |----|-------------|----------|
 | REQ-15.1 | Setup wizard accepts `.env` file for fully unattended deployment — no interactive prompts | MUST |
 | REQ-15.2 | `.env` file contains: API keys, NAS IP/path, Telegram config, agent selection, budget, optimizer toggle | MUST |
-| REQ-15.3 | `bash setup-wizard.sh --env /path/to/.env` triggers non-interactive mode | MUST |
+| REQ-15.3 | `bash setup-wizard-v20.sh --env /path/to/.env` triggers non-interactive mode | MUST |
 | REQ-15.4 | `.env` file validated before execution — missing required fields halt with clear error | MUST |
 | REQ-15.5 | `.env.example` template provided with all fields documented | SHOULD |
 | REQ-15.6 | Unattended mode produces same output as interactive mode — no feature gaps | MUST |

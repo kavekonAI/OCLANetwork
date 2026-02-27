@@ -2,7 +2,7 @@
 
 ## Version 20.0
 
-This document provides every step required before running `bash setup-wizard.sh` in interactive mode. Complete ALL sections in order. Each section ends with a verification command.
+This document provides every step required before running `bash setup-wizard-v20.sh` in interactive mode. Complete ALL sections in order. Each section ends with a verification command.
 
 ---
 
@@ -620,14 +620,14 @@ git clone https://github.com/kavekonAI/OCLANetwork.git
 cd OCLANetwork
 
 # Option B: Direct download
-curl -LO https://raw.githubusercontent.com/kavekonAI/OCLANetwork/main/setup-wizard.sh
-chmod +x setup-wizard.sh
+curl -LO https://raw.githubusercontent.com/kavekonAI/OCLANetwork/main/setup-wizard-v20.sh
+chmod +x setup-wizard-v20.sh
 ```
 
 ### Step 9.2: Start the Wizard
 
 ```bash
-bash setup-wizard.sh
+bash setup-wizard-v20.sh
 ```
 
 ### Step 9.3: Interactive Wizard Walkthrough
@@ -1006,7 +1006,7 @@ for f in /home/ocl/ocl-deploy/scripts/ocl-{health,upgrade,restart,start,pause,re
 done
 
 # Or re-run the wizard to reinstall all scripts fresh
-bash setup-wizard.sh
+bash setup-wizard-v20.sh
 ```
 
 ### Commander can only spawn itself — `agents_list` returns only `commander`
@@ -1046,7 +1046,7 @@ kubectl rollout status deployment/gateway-home -n ocl-agents --timeout=90s
 ocl-nuke all --confirm="NUKE ALL"
 
 # Then re-run wizard
-bash setup-wizard.sh
+bash setup-wizard-v20.sh
 ```
 
 ---
@@ -1059,8 +1059,8 @@ bash setup-wizard.sh
 │            Quick Reference Card                       │
 ├──────────────────────────────────────────────────────┤
 │                                                       │
-│  INSTALL:    bash setup-wizard.sh                    │
-│  UNATTENDED: bash setup-wizard.sh --env .env         │
+│  INSTALL:    bash setup-wizard-v20.sh                    │
+│  UNATTENDED: bash setup-wizard-v20.sh --env .env         │
 │                                                       │
 │  HEALTH:     ocl-health                              │
 │  PODS:       kubectl get pods -A                     │
@@ -1084,7 +1084,7 @@ bash setup-wizard.sh
 │  FILES:                                               │
 │    REQUIREMENTS.md        — Full spec                │
 │    openclaw-architecture.md — Architecture           │
-│    setup-wizard.sh        — Installer                │
+│    setup-wizard-v20.sh        — Installer                │
 │    .env.example           — Unattended template      │
 │    PREREQUISITES.md       — This document            │
 │                                                       │
