@@ -82,7 +82,6 @@ df -h / | awk 'NR==2 {print $4 " available"}'
 |----|---------|--------|
 | Ubuntu Server | 22.04 LTS / 24.04 LTS | Fully supported (recommended) |
 | Debian | 12 (Bookworm) | Supported |
-| macOS | 13+ (Ventura) | Supported (Homebrew required) |
 | Raspberry Pi OS | 64-bit (Bookworm) | Community tested |
 
 The wizard auto-installs all dependencies, but the following must be available on the system beforehand.
