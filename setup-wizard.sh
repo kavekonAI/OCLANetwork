@@ -1991,7 +1991,7 @@ LCEOF
   # GOOGLE (fallback)
   - model_name: gemini-flash
     litellm_params:
-      model: gemini/gemini-3.1-pro-preview
+      model: gemini/gemini-3-flash-preview
       api_key: os.environ/GOOGLE_API_KEY
 LCEOF
 
@@ -2286,7 +2286,7 @@ get_agent_primary_model() {
     case $id in
         commander)           echo "anthropic/claude-opus-4-6" ;;
         quant-trader)        echo "anthropic/claude-opus-4-6" ;;
-        researcher)          echo "google/gemini-3.1-pro-preview" ;;
+        researcher)          echo "google/gemini-3-flash-preview" ;;
         reddit-scout)        echo "anthropic/claude-sonnet-4-5" ;;
         x-scout)             echo "anthropic/claude-sonnet-4-5" ;;
         token-audit)
@@ -2297,7 +2297,7 @@ get_agent_primary_model() {
             if [ "${OPTIMIZER_ACTIVE:-true}" = "true" ]; then
                 echo "ollama/phi4-mini"
             elif [ "${HAS_GOOGLE:-false}" = "true" ]; then
-                echo "google/gemini-3.1-pro-preview"
+                echo "google/gemini-3-flash-preview"
             elif [ "${HAS_OPENAI:-false}" = "true" ]; then
                 echo "openai/gpt-4o-mini"
             else
@@ -2316,6 +2316,7 @@ get_model_display_name() {
         openai-codex/gpt-5.3-codex)     echo "GPT-5.3 Codex" ;;
         google/gemini-3.1-pro-preview)  echo "Gemini 3.1 Pro" ;;
         google/gemini-3-flash-preview)  echo "Gemini 3 Flash" ;;
+        google/gemini-2.5-flash)        echo "Gemini 2.5 Flash" ;;
         openai/gpt-4o)                  echo "GPT-4o" ;;
         openai/gpt-4o-mini)             echo "GPT-4o Mini" ;;
         ollama/phi4-mini)               echo "Phi-4 Mini (local)" ;;
@@ -2332,6 +2333,7 @@ get_model_short_name() {
         openai-codex/gpt-5.3-codex)     echo "Codex 5.3" ;;
         google/gemini-3.1-pro-preview)  echo "Gemini 3.1" ;;
         google/gemini-3-flash-preview)  echo "Gemini 3 Flash" ;;
+        google/gemini-2.5-flash)        echo "Gemini 2.5" ;;
         openai/gpt-4o)                  echo "GPT-4o" ;;
         openai/gpt-4o-mini)             echo "GPT-4o Mini" ;;
         ollama/phi4-mini)               echo "Phi-4" ;;
@@ -2849,7 +2851,7 @@ generate_openclaw_config() {
             claude-opus)     model_str="anthropic/claude-opus-4-6" ;;
             claude-sonnet)   model_str="anthropic/claude-sonnet-4-5" ;;
             codex-plus)      model_str="openai-codex/gpt-5.3-codex" ;;
-            gemini-research) model_str="google/gemini-3.1-pro-preview" ;;
+            gemini-research) model_str="google/gemini-3-flash-preview" ;;
             local-fast)
                 if [ "${OPTIMIZER_ACTIVE:-true}" = "true" ]; then
                     model_str="ollama/phi4-mini"
@@ -2857,7 +2859,7 @@ generate_openclaw_config() {
                     # [EF3] Direct Mode: smart fallback chain based on available keys
                     # Priority: Google (cheapest) → OpenAI → Anthropic (most expensive)
                     if [ "${HAS_GOOGLE:-false}" = "true" ]; then
-                        model_str="google/gemini-3.1-pro-preview"
+                        model_str="google/gemini-3-flash-preview"
                     elif [ "${HAS_OPENAI:-false}" = "true" ]; then
                         model_str="openai/gpt-4o-mini"
                     elif [ "${HAS_ANTHROPIC:-false}" = "true" ]; then
@@ -2874,8 +2876,8 @@ generate_openclaw_config() {
         # Avoid repeating the primary in fallbacks (e.g. opus primary → no opus fallback).
         local fallbacks_str
         case $model in
-            codex-plus)      fallbacks_str='"google/gemini-3.1-pro-preview","anthropic/claude-opus-4-6"' ;;
-            claude-opus)     fallbacks_str='"google/gemini-3.1-pro-preview","openai-codex/gpt-5.3-codex"' ;;
+            codex-plus)      fallbacks_str='"google/gemini-2.5-flash","anthropic/claude-opus-4-6"' ;;
+            claude-opus)     fallbacks_str='"google/gemini-2.5-flash","openai-codex/gpt-5.3-codex"' ;;
             gemini-research) fallbacks_str='"google/gemini-3-flash-preview","anthropic/claude-opus-4-6","openai-codex/gpt-5.3-codex"' ;;
             *)               fallbacks_str='"openai-codex/gpt-5.3-codex","anthropic/claude-opus-4-6"' ;;
         esac
