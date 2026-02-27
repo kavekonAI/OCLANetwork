@@ -942,6 +942,13 @@ NAS data is ALWAYS preserved unless you explicitly run `ocl-nuke nas-data <path>
 bash setup-wizard.sh
 ```
 
+### Interactive .env Builder
+```bash
+bash setup-wizard.sh --interactive-env
+```
+
+Guided wizard that asks for each configuration value one-by-one (API keys collected securely via hidden input), validates entries, and writes a `.env` file with `chmod 600`. At the end, offers to deploy immediately. Best for first-time users who want guardrails without editing files manually.
+
 ### Unattended Mode (One-Click Deploy)
 ```bash
 bash setup-wizard.sh --env /path/to/.env

@@ -1141,6 +1141,7 @@ bash setup-wizard.sh
 ├──────────────────────────────────────────────────────┤
 │                                                       │
 │  INSTALL:    bash setup-wizard.sh                    │
+│  ENV BUILDER:bash setup-wizard.sh --interactive-env  │
 │  UNATTENDED: bash setup-wizard.sh --env .env         │
 │                                                       │
 │  HEALTH:     ocl-health                              │

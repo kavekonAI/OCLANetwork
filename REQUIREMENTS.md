@@ -309,6 +309,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-15.7 | `.env` file is shredded after secrets are injected into K8s Secrets | MUST |
 | REQ-15.8 | Unattended NAS setup validates `/mnt/nas` is a real NFS mount, not local directory — halts if not | MUST |
 | REQ-15.9 | Setup script installs `trap` handler — scrubs secrets from log on premature exit (Ctrl-C, error) | MUST |
+| REQ-15.10 | `--interactive-env` flag launches guided `.env` builder — prompts for each field with validation, writes `.env` with `chmod 600`, then optionally deploys immediately | SHOULD |
 
 ### REQ-16: NAS Outage Resilience (SSD-First Write)
 
