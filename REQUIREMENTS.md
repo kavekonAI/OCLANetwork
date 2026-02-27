@@ -33,13 +33,14 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| REQ-02.1 | Private Telegram group as human-visible audit trail | MUST |
-| REQ-02.2 | Each agent has a dedicated Telegram bot in the group | MUST |
-| REQ-02.3 | Forum topics per agent for organized threads | MUST |
-| REQ-02.4 | Human can observe all agent-to-agent communication | MUST |
-| REQ-02.5 | Human can intervene/override agent decisions via Telegram | MUST |
-| REQ-02.6 | Redis Streams is the actual message bus; Telegram mirrors for visibility | MUST |
-| REQ-02.7 | Messages tagged with task IDs for traceability | SHOULD |
+| REQ-02.1 | Private Telegram group (OCLANGrp) with Forum Topics enabled serves as the human-visible audit trail for ALL agent activity — every agent MUST post task lifecycle events to the group, not just Commander | MUST |
+| REQ-02.2 | All agents share the single OpenClaw Telegram bot in the group — OpenClaw routes inbound group messages to Commander via channel binding; all agents post outbound messages to their own Forum topic via the same bot | MUST |
+| REQ-02.3 | Each agent MUST have a dedicated Forum topic named after its agent ID (e.g., "commander", "researcher", "watchdog") for organized per-agent threads; specialized topics ("#System", "#Security", "#Dashboard") remain for cross-cutting concerns | MUST |
+| REQ-02.4 | Human can observe all agent-to-agent communication — task delegations, handoffs, completions, and failures MUST be posted to the relevant agent's Forum topic in real-time | MUST |
+| REQ-02.5 | Human can intervene/override agent decisions via Telegram group replies | MUST |
+| REQ-02.6 | Redis Streams is the actual message bus; Telegram group posts are the visibility mirror — agents MUST NOT depend on Telegram for inter-agent coordination (Redis is authoritative) | MUST |
+| REQ-02.7 | All Telegram group posts MUST include the task ID for traceability (format: `Task <TASK_ID>: ...`) | MUST |
+| REQ-02.8 | Air-gapped agents (`network: none`) MUST write visibility events to `ocl:visibility:<agent-id>` Redis stream; Commander MUST relay these to the agent's Forum topic every 60 seconds | MUST |
 
 ### REQ-03: Agent Communication Dashboard
 
@@ -412,6 +413,16 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-24.10 | Stage 1 deterministic regex DLP MUST run on ALL outbound traffic without exception — it is fast (<1ms) and immune to prompt injection | MUST |
 | REQ-24.11 | Stage 2 LLM Diplomat sanitization SHOULD be bypassed for traffic to whitelisted API endpoints (api.anthropic.com, api.telegram.org, api.openai.com, console.anthropic.com) — these are trusted first-party APIs where Diplomat adds latency without security benefit | SHOULD |
 | REQ-24.12 | Agents MUST self-classify operations as "internal" (Redis, inter-agent JWT-signed messages) or "external" (any non-whitelisted endpoint) and apply the full two-stage DLP pipeline only to external operations — internal traffic bypasses DLP entirely via valid JWT | MUST |
+
+### REQ-25: Universal Telegram Group Visibility Protocol
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-25.1 | A universal `GROUP_VISIBILITY_PROTOCOL` block MUST be appended to every agent SOUL — it instructs agents to post task lifecycle events (received, progress, completed, failed, handoff) to their designated Forum topic in the Telegram group | MUST |
+| REQ-25.2 | Visibility posts MUST be limited to meaningful task lifecycle events only — internal Redis operations (heartbeats, checkpoints, ALKB lookups), routine cron ticks, and intermediate API retries MUST NOT be posted | MUST |
+| REQ-25.3 | Air-gapped agents (`network: none`) MUST write visibility events to Redis stream `ocl:visibility:<agent-id>` instead of posting directly; Commander relays these every 60 seconds per REQ-02.8 | MUST |
+| REQ-25.4 | The universal protocol coexists with existing agent-specific Telegram posting — agent-specific instructions take precedence for specialized events (Watchdog security alerts, Token-Audit cost summaries) | MUST |
+| REQ-25.5 | Commander MUST include air-gapped relay polling (`XREAD ocl:visibility:*`) in its 60-second monitoring cycle alongside heartbeat checks | MUST |
 
 ---
 

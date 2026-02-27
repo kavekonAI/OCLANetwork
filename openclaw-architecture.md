@@ -787,6 +787,40 @@ Instead of a blanket `sandbox.mode: "ask"` for all agents, each agent's sandbox 
 
 **Security note:** Quant-trader's `sandbox: "off"` is safe ONLY because its Kubernetes NetworkPolicy blocks all network access. If `network: none` is ever relaxed, sandbox MUST be changed to `"ask"`.
 
+### Telegram Group Visibility [REQ-25]
+
+REQ-02 requires all agent activity to be visible in the Telegram group (OCLANGrp). The **Group Visibility Protocol** is the fourth universal SOUL block (alongside Recovery, Conversation Memory, and Provider Badge) that gives every agent a baseline set of Telegram posting instructions.
+
+**Lifecycle events posted to each agent's Forum topic:**
+
+| Event | Format | When |
+|-------|--------|------|
+| Task received | `📥 Task <ID>: <description>` | On accepting a task from queue |
+| Progress | `⏳ Task <ID>: step N/M — <completed>` | After major steps in multi-step work |
+| Completed | `✅ Task <ID>: <result summary>` | On successful completion |
+| Failed | `❌ Task <ID>: <category> — <reason>` | On unrecoverable failure |
+| Handoff sent | `➡️ Delegating <ID> to <agent>` | When delegating to another agent |
+| Handoff received | `📥 Picked up <ID> from <agent>` | When receiving delegation |
+
+**Forum topic naming:** Each agent posts to a topic matching its agent ID (e.g., "commander", "researcher", "watchdog"). Specialized cross-cutting topics ("#System", "#Security", "#Dashboard") remain for Watchdog alerts and Token-Audit summaries.
+
+**Anti-spam:** Internal operations (Redis heartbeats, ALKB lookups, checkpoint writes, cron ticks, API retries) are explicitly excluded. Agents with their own detailed Telegram instructions (Commander, Watchdog, Content-Creator, Token-Audit) follow those for specialized events and use the universal protocol only for events not already covered.
+
+**Air-gapped relay (Quant-Trader):**
+
+```
+Normal agent:
+  Agent ──────────────────────────► Telegram Group
+         posts to Forum topic        (topic: <agent-id>)
+
+Air-gapped agent (network: none):
+  Quant-Trader ──► Redis             Commander ──► Telegram Group
+    XADD ocl:visibility:       polls every 60s     (topic: quant-trader)
+    quant-trader
+```
+
+Since quant-trader has `network: none`, it writes visibility events to `ocl:visibility:quant-trader` in Redis. Commander includes this stream in its 60-second monitoring cycle and relays events to the quant-trader's Forum topic. This keeps the human informed without breaking the trading air-gap.
+
 ---
 
 ## Agent & Node Lifecycle Management

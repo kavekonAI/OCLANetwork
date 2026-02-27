@@ -2202,6 +2202,36 @@ On fallback (prompt began with "Continue where you left off"):
 `_<YOUR_MODEL_EMOJI> <YOUR_MODEL_SHORT> ⚡_`
 '
 
+GROUP_VISIBILITY_PROTOCOL='
+## ═══ GROUP VISIBILITY PROTOCOL ═══
+## (Standard block — present in every agent SOUL)
+## Ensures all agent activity is visible in OCLANGrp [REQ-25]
+
+### Your Forum Topic
+Post task lifecycle events to your Forum topic in the Telegram group.
+Your topic name: **<YOUR_ID>**
+
+### When to Post (lifecycle events ONLY — no spam)
+1. **Task received**: "📥 Task `<TASK_ID>`: <1-line description>"
+2. **Significant progress** (multi-step tasks, after completing a major step):
+   "⏳ Task `<TASK_ID>`: step <N>/<TOTAL> — <what completed>"
+3. **Task completed**: "✅ Task `<TASK_ID>`: <1-2 sentence result summary>"
+4. **Task failed**: "❌ Task `<TASK_ID>`: <error_category> — <1-line reason>"
+5. **Handoff sent**: "➡️ Delegating `<TASK_ID>` to <target-agent>"
+6. **Handoff received**: "📥 Picked up `<TASK_ID>` from <source-agent>"
+
+### What NOT to Post
+- Internal Redis reads/writes (heartbeats, checkpoints, ALKB lookups)
+- Routine cron ticks with no meaningful output
+- Intermediate API calls or retries
+- Anything already covered by your agent-specific Telegram instructions
+
+### Air-Gapped Agents (network: none)
+If you have no network access, write visibility events to Redis instead:
+  `XADD ocl:visibility:<YOUR_ID> * event <type> task_id <TASK_ID> msg "<text>" ts "<ISO-8601>"`
+Commander relays these to your Forum topic every 60 seconds.
+'
+
 # Maps agent ID to its primary model string
 get_agent_primary_model() {
     local id=$1
@@ -2651,6 +2681,10 @@ SOUL
     badge_block="${badge_block//<YOUR_MODEL_SHORT>/${model_short}}"
     badge_block="${badge_block//<YOUR_MODEL_EMOJI>/${model_emoji}}"
     printf '\n%s\n' "$badge_block" >> "$soul_file"
+
+    # Append Group Visibility Protocol — Telegram group audit trail [REQ-25]
+    local visibility_block="${GROUP_VISIBILITY_PROTOCOL//<YOUR_ID>/${id}}"
+    printf '\n%s\n' "$visibility_block" >> "$soul_file"
 }
 
 # ─── OPENCLAW CONFIG ───────────────────────────────────────────────────
