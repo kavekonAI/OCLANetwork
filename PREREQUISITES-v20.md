@@ -252,7 +252,7 @@ This section configures your NAS to serve files over NFSv4.1. Skip if you don't 
 4. Set:
    - **Hostname or IP**: `*` (or your server's Tailscale IP for tighter security, e.g., `100.64.0.0/24`)
    - **Privilege**: Read/Write
-   - **Squash**: Map all users to admin
+   - **Squash**: No mapping
    - **Security**: sys
    - **Enable asynchronous**: Yes
    - **Allow connections from non-privileged ports**: Yes
