@@ -2083,6 +2083,25 @@ RECOVERY_PROTOCOL='
    If entries exist → read them and include a brief "Picking up from earlier:" note in
    your first response. This restores continuity across pod restarts and provider switches.
 
+### DLP Awareness — Two-Stage Egress Pipeline [REQ-24.10]
+When making external API calls, understand the DLP stages that protect your traffic:
+
+**Stage 1 — Deterministic Regex (ALWAYS runs, <1ms):**
+Hard-blocks NAS paths, internal IPs, Redis keys, JWT tokens, K8s refs.
+Immune to prompt injection. You cannot bypass this — nor should you try.
+
+**Stage 2 — LLM Diplomat Sanitization (CONDITIONAL):**
+Strips semantic leaks (agent names, cluster architecture, strategy info).
+[REQ-24.11] Bypassed for whitelisted API endpoints:
+  api.anthropic.com, api.telegram.org, api.openai.com, console.anthropic.com
+These trusted first-party APIs skip Diplomat to reduce latency.
+
+**Your responsibility [REQ-24.12]:**
+- Internal operations (Redis, inter-agent JWT-signed messages) → no DLP, bypass proxy
+- External to whitelisted APIs → Stage 1 regex only (fast path)
+- External to unknown/untrusted endpoints → full Stage 1 + Stage 2 pipeline
+- When in doubt, treat the operation as external — safety over speed
+
 ### During Multi-Step Work
 After EACH step, checkpoint your state:
 ```
@@ -2125,6 +2144,8 @@ SET ocl:heartbeat:<YOUR_ID> alive EX 120
      `HSET ocl:learnings:fixed:<id> original_failure <fail-id> fix_summary "<what worked>" validation "pending-review" source_agent_type "<YOUR_TYPE>" token_saving_delta "<tokens saved>"`
      `SMOVE ocl:learnings:by-status:open ocl:learnings:by-status:pending-review <id>`
    - NOTE: Item is NOT available for consultation until human approves via Dashboard
+   - [REQ-24.1] Write a semantic summary to conversation memory for future search:
+     `XADD ocl:conversation:<YOUR_ID>:memory * role system msg "ALKB-FIX: error_category=<type> domain=<domain> description=<natural language summary of what failed and what fixed it>" ts "<ISO-8601>"`
 
 2. On Task Failure (before giving up):
    - Archive failure context with attribution:
@@ -2132,12 +2153,21 @@ SET ocl:heartbeat:<YOUR_ID> alive EX 120
      `ZADD ocl:learnings:index <timestamp> <id>`
      `SADD ocl:learnings:by-domain:<domain> <id>`
      `SADD ocl:learnings:by-status:open <id>`
+   - [REQ-24.1] Write a semantic summary to conversation memory for future search:
+     `XADD ocl:conversation:<YOUR_ID>:memory * role system msg "ALKB-FAIL: error_category=<type> domain=<domain> description=<natural language summary of what went wrong and at which step>" ts "<ISO-8601>"`
 
 3. Before Starting Any Task:
-   - Consult ALKB for APPROVED fixes only:
+   - [REQ-24.2] Semantic search FIRST — use memorySearch to find similar past failures/fixes:
+     Search for keywords from the current task (error messages, domain, operation type).
+     memorySearch uses Gemini embeddings and catches synonyms (e.g. "connection timeout"
+     matches "request timed out"). Review any ALKB-FIX or ALKB-FAIL results found.
+   - Then exact-match Redis fallback for APPROVED fixes:
      `SMEMBERS ocl:learnings:by-domain:<relevant-domain>`
      For each result, check: `HGET ocl:learnings:fixed:<id> validation`
      ONLY use fixes where validation = "approved" (ignore pending/rejected)
+   - [REQ-24.3] When writing ALKB summaries, always include: error_category (e.g.
+     "connection_timeout"), domain (e.g. "egress_proxy"), and a natural-language
+     description that captures the specific symptoms and resolution.
 '
 
 CONVERSATION_MEMORY_PROTOCOL='
@@ -2281,6 +2311,35 @@ For trades >$500, social media posts, and large expenditures:
 1. `XADD ocl:approvals * task_id <id> payload '<json>'`
 2. Send approval request to human via Telegram DM
 3. Wait for human response before forwarding to agent
+
+## Strike Teams — Dynamic Sub-Agent Spawning [REQ-24.4]
+For complex multi-step tasks that benefit from parallel specialist collaboration,
+spawn temporary focused sessions using `sessions_spawn` instead of sequential Redis delegation.
+
+### When to Use Strike Teams
+- Task requires 2+ specialists working on related sub-problems (e.g. "research X, then create content about it")
+- Time-sensitive tasks where sequential delegation is too slow
+- Tasks requiring iterative feedback between specialists
+
+### When NOT to Use Strike Teams (use Redis queues instead)
+- Simple single-agent tasks (e.g. "check heartbeats", "audit token costs")
+- Tasks with no inter-agent dependency
+- Routine scheduled work
+
+### Strike Team Protocol
+1. Identify specialists needed: `agents_list` → filter by capability
+2. Spawn sessions: `sessions_spawn agent_id=<specialist> task="<focused sub-task>"`
+3. Monitor: track all spawned session IDs; check progress every 60s
+4. [REQ-24.5] Auto-timeout: terminate any session exceeding 30 minutes:
+   `sessions_terminate session_id=<id> reason="timeout"`
+5. Collect results from all sessions
+6. [REQ-24.6] Synthesize into ONE unified response → post to Telegram
+7. Cleanup: ensure all spawned sessions are terminated after collection
+
+### Example
+Task: "Research latest AI safety papers and draft a LinkedIn post about findings"
+→ Spawn researcher (find papers) + content-creator (draft post, waits for research)
+→ Collect both results → synthesize → post unified summary to Telegram
 
 ## Rules
 - NEVER execute specialist tasks yourself — you coordinate only
@@ -2663,10 +2722,22 @@ generate_openclaw_config() {
         local subagents_block=""
         [ "$id" = "commander" ] && subagents_block=',\n      "subagents": { "allowAgents": ["*"] }'
 
+        # [REQ-24.7] Per-agent sandbox mode based on risk profile.
+        # Supersedes blanket REQ-07.09 "ask" — defaults.sandbox.mode remains "ask" (REQ-24.8).
+        local sandbox_mode
+        case $id in
+            commander)                              sandbox_mode="non-main" ;;  # orchestrates freely; sub-tasks sandboxed
+            watchdog|token-audit|market-data-fetcher|researcher|librarian)
+                                                    sandbox_mode="off" ;;       # read-only operations
+            content-creator|linkedin-mgr)           sandbox_mode="ask" ;;       # external-facing writes need approval
+            quant-trader)                           sandbox_mode="off" ;;       # [REQ-24.9] air-gapped via network:none
+            *)                                      sandbox_mode="ask" ;;       # safe default for unknown agents
+        esac
+
         [ "$first" = true ] && first=false || agents_json+=","
         # [L11] Use printf for cleaner JSON concatenation (no stray blank lines)
-        # [REQ-07.09] sandbox mode:ask — agents must request approval before running shell commands.
-        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": [%s]\n      },\n      "sandbox": { "mode": "ask" }'"${subagents_block}"'\n    }' "$id" "$id" "$id" "$model_str" "$fallbacks_str")
+        # [REQ-24.7] Per-agent sandbox mode from risk matrix above.
+        agents_json+=$(printf '\n    {\n      "id": "%s",\n      "name": "%s",\n      "workspace": "/home/node/.openclaw/workspace-%s",\n      "model": {\n        "primary": "%s",\n        "fallbacks": [%s]\n      },\n      "sandbox": { "mode": "%s" }'"${subagents_block}"'\n    }' "$id" "$id" "$id" "$model_str" "$fallbacks_str" "$sandbox_mode")
     done
     agents_json+=$'\n  ]'
 

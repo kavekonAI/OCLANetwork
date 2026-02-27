@@ -379,6 +379,40 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-23.3 | Telegram bot privacy mode MUST be disabled via BotFather (`/setprivacy → Disable`) before the bot can receive plain group messages. Privacy mode change does NOT retroactively apply to groups the bot is already a member of — the bot must leave and rejoin for the change to take effect | MUST |
 | REQ-23.4 | The wizard MUST generate both `groupPolicy: "open"` and `groups."*".requireMention: false` in the openclaw config at deploy time so group chat works out of the box without manual post-deploy patching | MUST |
 
+### REQ-24: Advanced OpenClaw Feature Utilization
+
+#### Semantic ALKB Search (Memory-Augmented Learning)
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-24.1 | Agents MUST write a structured summary to their conversation memory stream (`XADD ocl:conversation:<ID>:memory`) after every ALKB failure archive or fix promotion — this makes failure/fix data semantically searchable via OpenClaw's Gemini-powered `memorySearch` | MUST |
+| REQ-24.2 | Before starting any task, agents MUST perform a semantic memory search (via OpenClaw's built-in `memorySearch` tool) for similar past failures/fixes FIRST, then fall back to exact-match Redis ALKB lookups (`SMEMBERS ocl:learnings:by-domain:<domain>`) — semantic search catches synonyms and related errors that lexical domain tags miss | MUST |
+| REQ-24.3 | ALKB memory summaries MUST include three fields: `error_category` (e.g. "connection_timeout"), `domain` (e.g. "egress_proxy"), and a natural-language `description` (e.g. "CONNECT tunnel failed due to missing Host header in Node 22 native fetch") — this structure maximizes embedding recall across varied error phrasings | MUST |
+
+#### Strike Teams (Dynamic Sub-Agent Spawning)
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-24.4 | Commander MUST use OpenClaw's `sessions_spawn` to create temporary focused sessions ("Strike Teams") for complex multi-step tasks that benefit from parallel specialist collaboration — simple single-agent tasks continue using Redis queue delegation | MUST |
+| REQ-24.5 | Strike Team sessions MUST have a 30-minute auto-timeout; Commander monitors active sessions and terminates any that exceed this limit to prevent resource leaks | MUST |
+| REQ-24.6 | Strike Team results MUST be collected by Commander and posted as a unified summary to Telegram — the human sees one coherent response, not fragmented agent outputs | SHOULD |
+
+#### Per-Agent Sandbox Permissions
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-24.7 | Agent sandbox modes MUST be set per-agent based on risk profile: `commander: "non-main"` (orchestrates freely, sub-tasks sandboxed), `watchdog/token-audit/market-data-fetcher/researcher/librarian: "off"` (read-only operations), `content-creator/linkedin-mgr: "ask"` (external-facing writes need approval), `quant-trader: "off"` (already air-gapped via `network: none`) — this supersedes the blanket `sandbox.mode: "ask"` from REQ-07.09 | MUST |
+| REQ-24.8 | `agents.defaults.sandbox.mode` MUST remain `"ask"` as a safe fallback for any newly added agents not yet in the risk matrix | MUST |
+| REQ-24.9 | Quant-trader's `sandbox.mode: "off"` relies on its `network: none` Kubernetes NetworkPolicy for isolation — if the network policy is ever relaxed, sandbox MUST be changed to `"ask"` | MUST |
+
+#### Conditional DLP (Smart Diplomat Bypass)
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| REQ-24.10 | Stage 1 deterministic regex DLP MUST run on ALL outbound traffic without exception — it is fast (<1ms) and immune to prompt injection | MUST |
+| REQ-24.11 | Stage 2 LLM Diplomat sanitization SHOULD be bypassed for traffic to whitelisted API endpoints (api.anthropic.com, api.telegram.org, api.openai.com, console.anthropic.com) — these are trusted first-party APIs where Diplomat adds latency without security benefit | SHOULD |
+| REQ-24.12 | Agents MUST self-classify operations as "internal" (Redis, inter-agent JWT-signed messages) or "external" (any non-whitelisted endpoint) and apply the full two-stage DLP pipeline only to external operations — internal traffic bypasses DLP entirely via valid JWT | MUST |
+
 ---
 
 ## 3. Architecture Overview

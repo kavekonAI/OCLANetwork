@@ -652,6 +652,141 @@ Security audit trail:
 
 The Dashboard's Security Audit Log tab displays these events in real-time.
 
+### Conditional DLP — Smart Diplomat Bypass [REQ-24.10–24.12]
+
+The two-stage DLP pipeline adds latency to every outbound request. For trusted first-party API endpoints that are already whitelisted, Stage 2 (Diplomat LLM sanitization) is unnecessary overhead.
+
+```
+Outbound traffic classification:
+
+Internal (JWT-signed inter-agent)     → NO DLP (bypasses proxy entirely)
+External → whitelisted API endpoint   → Stage 1 regex ONLY (fast path, <1ms)
+External → unknown/untrusted endpoint → Stage 1 regex + Stage 2 Diplomat (full pipeline)
+```
+
+**Whitelisted fast-path endpoints** (Stage 1 only):
+- `api.anthropic.com` — LLM API calls
+- `api.telegram.org` — bot API
+- `api.openai.com` — LLM API calls
+- `console.anthropic.com` — OAuth token refresh
+- `core.telegram.org` — media/file downloads
+
+Stage 1 regex ALWAYS runs — it is fast (<1ms), deterministic, and immune to prompt injection. The bypass only applies to Stage 2's LLM-based semantic analysis, which adds 200–500ms per request.
+
+**Agent self-classification:** Agents assess each operation as internal or external. Internal operations (Redis writes, JWT-signed inter-agent messages) bypass the proxy entirely. External operations to unknown endpoints get the full two-stage pipeline. When in doubt, agents default to the full pipeline — safety over speed.
+
+### Semantic ALKB Search [REQ-24.1–24.3]
+
+The Agent Learnings Knowledge Base (ALKB) stores failure/fix data in Redis with domain tags (`SADD ocl:learnings:by-domain:<domain>`). However, lexical lookup is fragile — an agent encountering "request timed out" won't find the fix filed under "connection timeout".
+
+**Solution:** Agents write structured summaries to their conversation memory stream after every ALKB archive or fix promotion. OpenClaw's `memorySearch` (Gemini embeddings, already enabled via `agents.defaults.memorySearch`) indexes these summaries automatically, making them semantically searchable.
+
+```
+Task starts
+    │
+    ▼
+┌──────────────────────────────┐
+│ 1. Semantic Search (FIRST)   │
+│    memorySearch: "connection  │
+│    timeout egress proxy"     │
+│                              │
+│    Finds ALKB-FIX and        │
+│    ALKB-FAIL summaries via   │
+│    Gemini embeddings.        │
+│    Catches synonyms and      │
+│    related errors.           │
+└──────────────┬───────────────┘
+               │ results (if any)
+               ▼
+┌──────────────────────────────┐
+│ 2. Redis Exact Match         │
+│    (fallback)                │
+│    SMEMBERS                  │
+│    ocl:learnings:by-domain:  │
+│    <domain>                  │
+│                              │
+│    HGET ...:fixed:<id>       │
+│    validation = "approved"   │
+│    only                      │
+└──────────────┬───────────────┘
+               │
+               ▼
+         Apply learnings
+         to current task
+```
+
+**Memory summary format:**
+```
+XADD ocl:conversation:<ID>:memory * role system
+  msg "ALKB-FIX: error_category=connection_timeout domain=egress_proxy
+       description=CONNECT tunnel failed due to missing Host header in
+       Node 22 native fetch — fixed by using per-request undici ProxyAgent"
+  ts "<ISO-8601>"
+```
+
+The three required fields (`error_category`, `domain`, `description`) maximize embedding recall. The natural-language `description` is what Gemini embeddings index — varied phrasings of the same problem will cluster together in vector space.
+
+### Strike Team Pattern [REQ-24.4–24.6]
+
+Commander already has `subagents.allowAgents: ["*"]`, enabling it to spawn any agent via `sessions_spawn`. The Strike Team pattern formalizes when and how to use this capability.
+
+```
+Commander receives complex task
+    │
+    ├── Simple task? → Redis queue (XADD ocl:agent:<target>)
+    │
+    └── Multi-step / parallel? → Strike Team
+           │
+           ▼
+    ┌──────────────────────────────┐
+    │ 1. Spawn focused sessions    │
+    │    sessions_spawn researcher │
+    │    sessions_spawn content-   │
+    │      creator                 │
+    │                              │
+    │ 2. Monitor (60s intervals)   │
+    │    Track session IDs         │
+    │    30-min auto-timeout       │
+    │                              │
+    │ 3. Collect results           │
+    │    sessions_terminate after  │
+    │    results received          │
+    │                              │
+    │ 4. Synthesize                │
+    │    One unified response →    │
+    │    Telegram                  │
+    └──────────────────────────────┘
+```
+
+**Decision criteria:**
+| Condition | Routing |
+|-----------|---------|
+| Single agent, no dependencies | Redis queue |
+| 2+ agents, related sub-problems | Strike Team |
+| Time-sensitive parallel work | Strike Team |
+| Routine scheduled tasks | Redis queue |
+
+**Timeout safety:** All spawned sessions auto-terminate at 30 minutes. Commander tracks active session IDs and runs cleanup on timeout. This prevents orphaned sessions from consuming resources.
+
+### Per-Agent Sandbox Matrix [REQ-24.7–24.9]
+
+Instead of a blanket `sandbox.mode: "ask"` for all agents, each agent's sandbox is tuned to its risk profile. The `agents.defaults.sandbox.mode` remains `"ask"` as a safe fallback for any new agents.
+
+| Agent | Sandbox Mode | Rationale |
+|-------|-------------|-----------|
+| commander | `non-main` | Orchestrates freely; spawned sub-task sessions are sandboxed |
+| watchdog | `off` | Read-only: polls heartbeats, checks subscription status |
+| token-audit | `off` | Read-only: queries cost APIs, reads Redis metrics |
+| market-data-fetcher | `off` | Read-only: fetches market data from public APIs |
+| researcher | `off` | Read-only: web search, paper retrieval, summarization |
+| librarian | `off` | Read-only: NAS file indexing and search |
+| content-creator | `ask` | External-facing: writes social media posts, needs approval |
+| linkedin-mgr | `ask` | External-facing: manages LinkedIn presence, needs approval |
+| quant-trader | `off` | Air-gapped: `network: none` NetworkPolicy provides isolation |
+| *(new agents)* | `ask` | Safe default from `agents.defaults` |
+
+**Security note:** Quant-trader's `sandbox: "off"` is safe ONLY because its Kubernetes NetworkPolicy blocks all network access. If `network: none` is ever relaxed, sandbox MUST be changed to `"ask"`.
+
 ---
 
 ## Agent & Node Lifecycle Management
