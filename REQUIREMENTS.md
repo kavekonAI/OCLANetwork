@@ -270,6 +270,8 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-13.3 | Whitelist-only egress model: only `ocl:egress:whitelist` members are allowed; unknown and blacklisted endpoints are blocked with HTTP 403 and logged to `ocl:security:audit` stream | MUST |
 | REQ-13.4 | Internal traffic (valid HMAC) bypasses Egress Proxy; only unsigned/external traffic routed through it | MUST |
 | REQ-13.5 | Security alerts posted to Telegram when blacklisted endpoint is contacted or HMAC verification fails | MUST |
+| REQ-13.6 | Egress whitelist MUST include news, research, and search domains (reuters.com, apnews.com, bbc.com, news.google.com, arxiv.org, en.wikipedia.org, scholar.google.com, api.brave.com, etc.) to enable `web_search` and `web_fetch` tools for researcher, content-creator, and subagent tasks | MUST |
+| REQ-13.7 | Post-install egress audit (`openclaw_post_install_check`) MUST verify all required domains are present in the whitelist and auto-add any missing entries | MUST |
 
 ### REQ-14: Agent Learnings Knowledge Base (ALKB)
 
@@ -649,7 +651,8 @@ HSET ocl:subscription:anthropic
 XADD ocl:dlp:log * agent <id> direction outbound target "<url>" stripped_count 3 timestamp "<ISO>"
 
 # ═══ EGRESS REPUTATION ═══
-SADD ocl:egress:whitelist "api.openai.com" "api.anthropic.com" "arxiv.org" "chatgpt.com" "auth.openai.com"
+SADD ocl:egress:whitelist "api.openai.com" "api.anthropic.com" "arxiv.org" "chatgpt.com" "auth.openai.com" \
+  "www.reuters.com" "apnews.com" "www.bbc.com" "news.google.com" "en.wikipedia.org" "api.brave.com" ...
 SADD ocl:egress:blacklist "<known-bad-endpoint>"
 
 # ═══ SECURITY AUDIT ═══
@@ -927,5 +930,6 @@ Check it's not already running (prevent duplicates):
 - [ ] `codex-oauth-refresh` CronJob (every 4h) — Codex OAuth token sync
 - [ ] `token-sync.js` background process in gateway pod — 60s auto-refresh + auth-profiles.json update
 - [ ] `console.anthropic.com`, `chatgpt.com`, `auth.openai.com` in egress whitelist for OAuth refresh
+- [ ] News/research/search domains whitelisted for web_search and web_fetch: reuters, AP, BBC, Google, Wikipedia, arXiv, etc.
 - [ ] Gateway startup script writes auth-profiles.json from secrets at runtime — OAuth tokens never baked into image
 - [ ] `~/.claude/.credentials.json` permissions 646 — readable/writable by gateway pod (uid 1000) and CronJob (root)

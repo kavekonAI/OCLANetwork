@@ -1443,7 +1443,13 @@ EGRESSEOF
         "fred.stlouisfed.org" "registry.npmjs.org" "api.telegram.org" \
         "generativelanguage.googleapis.com" "aiplatform.googleapis.com" "oauth2.googleapis.com" \
         "chatgpt.com" "auth.openai.com" "console.anthropic.com" \
-        "core.telegram.org" >/dev/null 2>&1 || true
+        "core.telegram.org" \
+        "www.reuters.com" "apnews.com" "www.bbc.com" "news.google.com" \
+        "www.nytimes.com" "www.theguardian.com" "www.bloomberg.com" \
+        "techcrunch.com" "www.wired.com" "arstechnica.com" \
+        "en.wikipedia.org" "www.google.com" "scholar.google.com" \
+        "news.ycombinator.com" "www.cnbc.com" "www.ft.com" \
+        "api.brave.com" >/dev/null 2>&1 || true
     echo ""; ok "Egress Proxy + regex blocklist + reputation whitelist"
 
     # ── NetworkPolicy — Agent Egress Lockdown [Gap Y3] ──
@@ -4461,6 +4467,14 @@ openclaw_post_install_check() {
         "oauth2.googleapis.com"
         "api.openai.com"
         "registry.npmjs.org"
+        "www.reuters.com"
+        "apnews.com"
+        "www.bbc.com"
+        "news.google.com"
+        "en.wikipedia.org"
+        "www.google.com"
+        "scholar.google.com"
+        "api.brave.com"
     )
     local missing_domains=()
     for domain in "${required_domains[@]}"; do

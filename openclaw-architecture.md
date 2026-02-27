@@ -643,7 +643,22 @@ Agent wants to call external API
 
 ```
 Redis reputation:
-  ocl:egress:whitelist → { "api.anthropic.com", "api.openai.com", "arxiv.org", "finance.yahoo.com" }
+  ocl:egress:whitelist → {
+    LLM APIs:     "api.anthropic.com", "console.anthropic.com", "api.openai.com",
+                  "chatgpt.com", "auth.openai.com",
+                  "generativelanguage.googleapis.com", "aiplatform.googleapis.com",
+                  "oauth2.googleapis.com"
+    Telegram:     "api.telegram.org", "core.telegram.org"
+    Research:     "arxiv.org", "api.semanticscholar.org", "scholar.google.com",
+                  "en.wikipedia.org", "api.github.com", "huggingface.co"
+    News:         "www.reuters.com", "apnews.com", "www.bbc.com", "news.google.com",
+                  "www.nytimes.com", "www.theguardian.com", "www.bloomberg.com",
+                  "techcrunch.com", "www.wired.com", "arstechnica.com",
+                  "news.ycombinator.com", "www.cnbc.com", "www.ft.com"
+    Search:       "www.google.com", "api.brave.com"
+    Finance:      "finance.yahoo.com", "api.alphavantage.co", "fred.stlouisfed.org"
+    Infra:        "registry.npmjs.org"
+  }
   ocl:egress:blacklist → { known-bad-endpoints }
 
 Security audit trail:
@@ -664,12 +679,17 @@ External → whitelisted API endpoint   → Stage 1 regex ONLY (fast path, <1ms)
 External → unknown/untrusted endpoint → Stage 1 regex + Stage 2 Diplomat (full pipeline)
 ```
 
-**Whitelisted fast-path endpoints** (Stage 1 only):
-- `api.anthropic.com` — LLM API calls
-- `api.telegram.org` — bot API
-- `api.openai.com` — LLM API calls
-- `console.anthropic.com` — OAuth token refresh
-- `core.telegram.org` — media/file downloads
+**Whitelisted fast-path endpoints** (Stage 1 only, Stage 2 Diplomat bypassed):
+- LLM APIs: `api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`
+- Telegram: `api.telegram.org`, `core.telegram.org`
+- OAuth: `console.anthropic.com`, `auth.openai.com`, `oauth2.googleapis.com`
+
+**Whitelisted full-path endpoints** (Stage 1 + Stage 2 both run):
+- News: `www.reuters.com`, `apnews.com`, `www.bbc.com`, `news.google.com`, etc.
+- Research: `arxiv.org`, `scholar.google.com`, `en.wikipedia.org`
+- Search: `www.google.com`, `api.brave.com`
+
+News/research/search endpoints go through both DLP stages because agents may compose outbound content when interacting with these sites (search queries, form submissions).
 
 Stage 1 regex ALWAYS runs — it is fast (<1ms), deterministic, and immune to prompt injection. The bypass only applies to Stage 2's LLM-based semantic analysis, which adds 200–500ms per request.
 
