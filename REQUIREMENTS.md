@@ -248,6 +248,9 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-11.10 | `ocl-upgrade` pauses all Redis task queues cluster-wide before starting upgrade (pre-flight lock) | MUST |
 | REQ-11.11 | `ocl-upgrade` only unpauses queues when `ocl-health` confirms 100% of nodes are on target version | MUST |
 | REQ-11.12 | `ocl-unlock` force-removes stuck upgrade locks when both upgrade and rollback fail | MUST |
+| REQ-11.13 | `ocl-upgrade` MUST install the new OpenClaw binary on the host via `npm install -g` — the container runs from the hostPath-mounted global module, not from an env var | MUST |
+| REQ-11.14 | `ocl-upgrade` MUST check skill compatibility in both `templates/skills/` and `skills/` directories, scanning both `template.yaml` and `SKILL.md` formats | MUST |
+| REQ-11.15 | `ocl-upgrade` post-upgrade banner MUST advise re-running the wizard for full artifact regeneration (SOULs, config, hooks, skills, SDK patches) | SHOULD |
 
 ### REQ-12: Data Loss Prevention — Diplomat Protocol
 

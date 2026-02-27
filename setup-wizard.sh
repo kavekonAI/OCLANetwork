@@ -3904,16 +3904,36 @@ if ! npm view "openclaw@${TARGET}" version >/dev/null 2>&1; then
 fi
 echo -e "  ${GREEN}Version ${TARGET} exists ✅${NC}"
 
-# 2. Check skill compatibility
+# 2. Install new binary on host [REQ-27 fix: ocl-upgrade was only patching env var,
+#    but the container runs from hostPath-mounted $(npm root -g)/openclaw]
+echo "  Installing openclaw@${TARGET} on host..."
+OCL_MODULE_PATH="$(npm root -g)/openclaw"
+npm install -g "openclaw@${TARGET}" >/dev/null 2>&1
+echo -e "  ${GREEN}Host binary updated ✅${NC}"
+
+# 3. Re-patch Anthropic SDK shims for new version (new SDK may have different code)
+echo "  Re-patching Anthropic SDK proxy shims..."
+SHIMS_JS="${OCL_MODULE_PATH}/node_modules/@anthropic-ai/sdk/internal/shims.js"
+SHIMS_MJS="${OCL_MODULE_PATH}/node_modules/@anthropic-ai/sdk/internal/shims.mjs"
+# Remove old patches (if any) so they can be cleanly re-applied by the wizard
+if [ -f "$SHIMS_JS" ]; then
+    sed -i '/PROXY_PATCH/,$d' "$SHIMS_JS" 2>/dev/null || true
+fi
+if [ -f "$SHIMS_MJS" ]; then
+    sed -i '/PROXY_PATCH/,$d' "$SHIMS_MJS" 2>/dev/null || true
+fi
+echo -e "  ${YELLOW}Note: Shims cleared. Re-run the wizard to re-apply proxy patches,${NC}"
+echo -e "  ${YELLOW}or restart will use the startup script's proxy-init.js fallback.${NC}"
+
+# 4. Check skill compatibility (search both template and SKILL.md formats)
 echo "  Checking skill compatibility..."
-SKILLS_DIR="${HOME}/ocl-deploy/templates/skills"
 COMPAT_FAIL=false
-if [ -d "$SKILLS_DIR" ]; then
-    for skill_file in "$SKILLS_DIR"/*/template.yaml; do
+for skill_dir in "${HOME}/ocl-deploy/templates/skills" "${HOME}/ocl-deploy/skills"; do
+    [ -d "$skill_dir" ] || continue
+    for skill_file in "$skill_dir"/*/template.yaml "$skill_dir"/*/SKILL.md; do
         [ -f "$skill_file" ] || continue
-        MIN_VER=$(grep "min:" "$skill_file" 2>/dev/null | sed 's/.*min: *//' | tr -d '"')
-        MAX_VER=$(grep "max:" "$skill_file" 2>/dev/null | sed 's/.*max: *//' | tr -d '"')
-        SKILL_NAME=$(grep "name:" "$skill_file" 2>/dev/null | head -1 | sed 's/.*name: *//' | tr -d '"')
+        MIN_VER=$(grep -E "^[[:space:]]*min:" "$skill_file" 2>/dev/null | sed 's/.*min: *//' | tr -d '"')
+        SKILL_NAME=$(grep -E "^[[:space:]]*name:" "$skill_file" 2>/dev/null | head -1 | sed 's/.*name: *//' | tr -d '"')
         if [ -n "$MIN_VER" ]; then
             if [ "$(printf '%s\n' "$MIN_VER" "$TARGET" | sort -V | head -n1)" != "$MIN_VER" ]; then
                 echo -e "  ${RED}Skill '${SKILL_NAME}' requires min ${MIN_VER}, target is ${TARGET}${NC}"
@@ -3921,18 +3941,18 @@ if [ -d "$SKILLS_DIR" ]; then
             fi
         fi
     done
-fi
+done
 if [ "$COMPAT_FAIL" = true ]; then
     echo -e "${RED}  Skill compatibility check failed. Abort.${NC}"
     exit 1
 fi
 echo -e "  ${GREEN}All skills compatible ✅${NC}"
 
-# 3. Update state file
+# 5. Update state file
 echo "  Updating pinned version in state file..."
 sed -i.bak "s|openclaw:.*|openclaw: \"${TARGET}\"|" "$OCL_STATE" && rm -f "$OCL_STATE.bak"
 
-# 4. [Z3] PRE-FLIGHT LOCK: Pause all task queues cluster-wide
+# 6. [Z3] PRE-FLIGHT LOCK: Pause all task queues cluster-wide
 echo ""
 echo -e "  ${YELLOW}🔒 PRE-FLIGHT LOCK: Pausing all task queues...${NC}"
 kubectl exec -n ocl-services deploy/redis -- redis-cli SET "ocl:upgrade:lock" "${TARGET}" EX 3600 >/dev/null 2>&1
@@ -3940,7 +3960,7 @@ echo "  Agents will checkpoint current work and stop accepting new tasks."
 echo "  Lock expires in 60 minutes (safety timeout)."
 sleep 5  # Give agents time to checkpoint
 
-# 5. Rolling upgrade: each gateway one at a time, tracking upgraded gateways for rollback
+# 7. Rolling upgrade: each gateway one at a time, tracking upgraded gateways for rollback
 ROLLBACK_VERSION="$CURRENT"
 UPGRADED_GWS=()
 for gw in home cloud gpu; do
@@ -4008,6 +4028,11 @@ if [ "$ALL_MATCH" = true ]; then
     echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
     echo ""
     echo "Run 'ocl-health' to verify version sync across all gateways."
+    echo ""
+    echo -e "${YELLOW}Note: ocl-upgrade updates the binary and restarts pods.${NC}"
+    echo -e "${YELLOW}For a FULL regeneration (SOULs, config, hooks, skills, SDK patches),${NC}"
+    echo -e "${YELLOW}re-run the wizard: bash setup-wizard.sh${NC}"
+    echo -e "${YELLOW}The wizard detects the existing install and extends/refreshes it.${NC}"
 else
     echo -e "  ${RED}⚠️ Version mismatch detected! Queues remain LOCKED.${NC}"
     echo -e "  ${RED}Run 'ocl-health' for details or re-run 'ocl-upgrade ${TARGET}' to retry.${NC}"
