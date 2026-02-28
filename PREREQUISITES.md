@@ -1079,12 +1079,12 @@ Even though `systemctl is-active k3s` returns `active`.
 
 **Cause:** The k3s `kubectl` binary defaults to `/etc/rancher/k3s/k3s.yaml` (owned by root, mode 600) when no `KUBECONFIG` env var is set. The user kubeconfig at `~/.kube/config` is not consulted unless `KUBECONFIG` is explicitly exported.
 
-**Fix:** All `ocl-*` scripts now set `export KUBECONFIG="${HOME}/.kube/config"` at the top. If you have an older install, update the scripts manually:
+**Fix:** All `ocl-*` scripts now hardcode `export KUBECONFIG=/home/ocl/.kube/config` (absolute path, not `${HOME}` — because `$HOME` can be empty in cron, systemd, or non-interactive shell contexts, causing kubectl to silently fall back to `localhost:8080` and fail). Additionally, `ocl-start-all` and `ocl-stop-all` verify k8s API connectivity before proceeding. If you have an older install, update the scripts manually:
 
 ```bash
 # Quick fix for all installed scripts
-for f in /home/ocl/ocl-deploy/scripts/ocl-{health,upgrade,restart,start,pause,resume,enable,unlock,nuke}; do
-  sed -i '2i\\# k3s kubectl fix\nexport KUBECONFIG="${HOME}/.kube/config"' "$f"
+for f in /home/ocl/ocl-deploy/scripts/ocl-{health,upgrade,restart,start,start-all,stop-all,pause,resume,enable,unlock,nuke}; do
+  sed -i 's|export KUBECONFIG="${HOME}/.kube/config"|export KUBECONFIG=/home/ocl/.kube/config|g' "$f"
 done
 
 # Or re-run the wizard to reinstall all scripts fresh

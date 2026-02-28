@@ -358,8 +358,9 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| REQ-20.1 | All `ocl-*` management scripts that invoke `kubectl` MUST export `KUBECONFIG="${HOME}/.kube/config"` — k3s kubectl defaults to `/etc/rancher/k3s/k3s.yaml` (root-only, mode 600) which silently fails for non-root users | MUST |
-| REQ-20.2 | Affected scripts: `ocl-health`, `ocl-upgrade`, `ocl-restart`, `ocl-start`, `ocl-pause`, `ocl-resume`, `ocl-enable`, `ocl-unlock`, `ocl-nuke` | MUST |
+| REQ-20.1 | All `ocl-*` management scripts that invoke `kubectl` MUST hardcode `KUBECONFIG=/home/ocl/.kube/config` (absolute path, not `${HOME}`) — k3s kubectl defaults to `/etc/rancher/k3s/k3s.yaml` (root-only, mode 600) and `$HOME` can be empty in cron/systemd contexts, causing silent failures | MUST |
+| REQ-20.2 | Affected scripts: `ocl-health`, `ocl-upgrade`, `ocl-restart`, `ocl-start`, `ocl-pause`, `ocl-resume`, `ocl-enable`, `ocl-unlock`, `ocl-nuke`, `ocl-start-all`, `ocl-stop-all` | MUST |
+| REQ-20.4 | `ocl-start-all` and `ocl-stop-all` MUST verify k8s API connectivity (`kubectl cluster-info`) before proceeding, exiting with a clear error message if unreachable | MUST |
 | REQ-20.3 | The user kubeconfig at `~/.kube/config` is written by the wizard during k3s install (`--write-kubeconfig-mode 644` or copy to home dir) and is the canonical kubectl config for the `ocl` user | MUST |
 
 ### REQ-21: Commander Sub-Agent Spawn Allowlist
