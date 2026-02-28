@@ -3463,10 +3463,10 @@ HOOKSCFG
               # CronJob (every 30m) syncs to k8s secret for pod restart bootstrap only.
               # token-sync: READ-ONLY distributor. Does NOT refresh tokens.
               # Claude Code CLI on the host is the sole token refresher.
-              # CronJob is the backup refresher (runs on host schedule).
+              # CronJob is read-only: syncs to k8s secret for pod restart bootstrap.
               # token-sync only reads credentials.json and distributes to agent auth-profiles.
-              # This eliminates the race condition where multiple processes try to use
-              # the same single-use refresh token simultaneously.
+              # This eliminates the race condition where multiple processes tried to use
+              # the same single-use refresh token simultaneously (caused invalid_grant loops).
               cat > /tmp/token-sync.js << 'TOKEN_SYNC_EOF'
 const fs=require('fs');
 const CP='/creds/.credentials.json',AB='/home/node/.openclaw/agents';
@@ -5896,6 +5896,8 @@ main() {
     echo -e "    ${GREEN}ocl-restart agent <id>${NC}      Rolling restart one agent"
     echo -e "    ${GREEN}ocl-restart gateway home${NC}    Rolling restart all home agents"
     echo -e "    ${GREEN}ocl-start agent <id>${NC}        Re-deploy a nuked agent"
+    echo -e "    ${GREEN}ocl-start-all${NC}               Start entire OCLAN stack"
+    echo -e "    ${GREEN}ocl-stop-all${NC}                Stop entire OCLAN stack (data preserved)"
     echo -e "    ${GREEN}ocl-enable optimizer${NC}        Enable LiteLLM+Ollama (hot-swap)"
     echo -e "    ${GREEN}ocl-unlock${NC}                  Force-remove stuck upgrade lock"
     echo -e "    ${GREEN}ocl-nuke agent <id>${NC}         Wipe one agent (archives to ALKB)"

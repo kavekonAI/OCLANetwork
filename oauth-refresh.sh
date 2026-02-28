@@ -23,7 +23,7 @@ EXPIRES_IN=$(python3 -c "print(($EXPIRES - $NOW_MS) // 1000 // 60)")
 echo "Token expires in ${EXPIRES_IN} minutes"
 
 if [ "$EXPIRES_IN" -le 0 ]; then
-  echo "WARNING: Token is EXPIRED — CronJob or token-sync.js should auto-refresh"
+  echo "WARNING: Token is EXPIRED — run /login in Claude Code CLI to refresh"
 fi
 
 # Sync to k8s secret (no restart — token-sync.js in the pod reads credentials.json directly)

@@ -137,7 +137,7 @@ sudo visudo
 
 **IMPORTANT — NAS Permissions (v16):** The wizard now sets `/mnt/nas/agents` ownership to UID 1000 (the `node` user inside gateway pods). If you've previously created NAS directories manually, run: `sudo chown -R 1000:1000 /mnt/nas/agents`
 
-**IMPORTANT — Synology NFS Squash Setting:** The Synology NFS export squash must be set to **"No mapping"** (Synology's label for no-squash — UIDs pass through unchanged without any mapping). Synology DSM does not show a literal "No squash" option; "No mapping" is the equivalent. Root squash or "Map all users to admin" blocks uid=1000 at the protocol level. To verify: DSM → Control Panel → File Services → NFS → Edit the `openclaw-data` export → confirm **Squash** is **No mapping**. Note: even with "No mapping", Synology NFSv4 ACLs can still deny uid=1000 — the `nas-chmod` initContainer in the gateway Deployment is the authoritative fix (runs `chmod a+rx /mnt/nas` as root at pod startup).
+**IMPORTANT — Synology NFS Squash Setting:** The Synology NFS export squash must be set to **"No mapping"** (Synology's label for no-squash — UIDs pass through unchanged without any mapping). Synology DSM does not show a literal "No squash" option; "No mapping" is the equivalent. Root squash or "Map all users to admin" blocks uid=1000 at the protocol level. To verify: DSM → Control Panel → File Services → NFS → Edit the `openclaw-data` export → confirm **Squash** is **No mapping**. Note: even with "No mapping", Synology NFSv4 ACLs can still deny uid=1000 — the `init-permissions` initContainer in the gateway Deployment is the authoritative fix (runs `chmod a+rx /mnt/nas` as root at pod startup).
 
 **IMPORTANT — NAS Mount Propagation:** The gateway Deployment uses `mountPropagation: HostToContainer` on the NAS volume mount. Without this, containers see the empty mount point directory (mode `0000`) instead of the NFS filesystem mounted on the host — all NAS access from inside pods will fail with EACCES.
 
@@ -871,7 +871,7 @@ kubectl rollout status deployment/gateway-home -n ocl-agents --timeout=90s
 
 **Cause 2 — Synology NFSv4 ACLs:** Even with the squash set to "No mapping" (= no squash, UIDs pass through), Synology NFSv4 ACLs can deny uid=1000 at the protocol level while allowing uid=0. This is a Synology-specific ACL layer on top of the standard Unix permission model — directory `chmod 777` does not override it.
 
-**Fix:** The gateway Deployment includes a `nas-chmod` initContainer that runs as root before the main container and executes `chmod a+rx /mnt/nas`. This resets the ACL restriction on every pod startup so that uid=1000 can access the mount.
+**Fix:** The gateway Deployment includes a `init-permissions` initContainer that runs as root before the main container and executes `chmod a+rx /mnt/nas`. This resets the ACL restriction on every pod startup so that uid=1000 can access the mount.
 
 If the initContainer is missing (older install), patch it in:
 
@@ -895,7 +895,7 @@ if 'securityContext' in spec:
     spec['securityContext'].pop('runAsNonRoot', None)
 
 init = {
-    'name': 'nas-chmod',
+    'name': 'init-permissions',
     'image': image,
     'command': ['sh', '-c', 'chmod a+rx /mnt/nas || true'],
     'securityContext': {'runAsUser': 0, 'allowPrivilegeEscalation': False},
@@ -903,7 +903,7 @@ init = {
 }
 
 existing = spec.get('initContainers', [])
-existing = [c for c in existing if c['name'] != 'nas-chmod']
+existing = [c for c in existing if c['name'] != 'init-permissions']
 spec['initContainers'] = [init] + existing
 
 with open('/tmp/gw-with-init.json', 'w') as f:
@@ -921,7 +921,7 @@ After the rollout, the initContainer log should show `chmod` succeeded:
 ```bash
 kubectl logs -n ocl-agents \
   $(kubectl get pod -n ocl-agents -l app=gateway-home -o name | head -1) \
-  -c nas-chmod
+  -c init-permissions
 # Expected: (empty — chmod ran silently) or "chmod: ..." warnings only
 ```
 

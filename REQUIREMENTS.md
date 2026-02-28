@@ -213,7 +213,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-17.2 | Wizard auto-detects OpenAI Codex CLI credentials (`~/.codex/auth.json`) and configures gateway to use ChatGPT Plus OAuth — zero API cost for `gpt-5.3-codex` | MUST |
 | REQ-17.3 | OAuth tokens stored in Kubernetes Secrets (`anthropic-oauth`, `openai-codex-oauth`) — never on disk or in env vars | MUST |
 | REQ-17.4 | OAuth tokens injected into gateway auth-profiles.json at pod startup — one profile per OAuth provider | MUST |
-| REQ-17.5 | Anthropic OAuth auto-refresh: background `token-sync.js` runs every 60s inside the gateway pod — reads `~/.claude/.credentials.json` (hostPath), refreshes via HTTP CONNECT tunnel through egress proxy when token has <2h remaining, writes refreshed tokens back to credentials file and updates `auth-profiles.json` for all agents. openclaw reads auth-profiles.json from disk on every API call (no cache) — zero-downtime refresh. CronJob `anthropic-oauth-refresh` (every 30m) is a safety-net backup that also syncs to the k8s Secret for pod restarts. Worst-case refresh latency: **60 seconds** | MUST |
+| REQ-17.5 | Anthropic OAuth token architecture: **Claude Code CLI on the host is the sole token refresher** — it auto-refreshes before expiry and writes to `~/.claude/.credentials.json`. Background `token-sync.js` (read-only, runs every 60s in gateway pod) reads credentials.json (hostPath) and distributes tokens to `auth-profiles.json` for all agents. openclaw reads auth-profiles.json from disk on every API call (no cache) — zero-downtime distribution. CronJob `anthropic-oauth-refresh` (every 30m) is read-only: syncs token values to k8s Secret for pod restart bootstrap only (does NOT refresh). No other process may attempt to refresh — Anthropic uses single-use refresh tokens, and concurrent refresh attempts cause `invalid_grant` loops. Worst-case distribution latency: **60 seconds** | MUST |
 | REQ-17.6 | OpenAI Codex OAuth refresh CronJob (`codex-oauth-refresh`) — runs every 4 hours, reads `~/.codex/auth.json`, syncs to k8s Secret | MUST |
 | REQ-17.7 | `OPENAI_CODEX_OAUTH_MODEL_PREFIXES` env var controls which model strings route through Codex OAuth profile (default: `["gpt-5.3-codex"]`) | MUST |
 | REQ-17.8 | Wizard install step installs `@openai/codex` npm package globally — enables device-auth login for ChatGPT Plus | SHOULD |
@@ -221,7 +221,7 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | REQ-17.10 | `chatgpt.com`, `auth.openai.com`, and `console.anthropic.com` added to egress whitelist — required for OAuth inference and token refresh | MUST |
 | REQ-17.11 | NetworkPolicy `agent-egress-lockdown` includes `ipBlock` CIDR rules for k8s API server (`10.43.0.1/32`, `192.168.0.0/16`) on ports 443/6443 — required for CronJob k8s Secret patches | MUST |
 | REQ-17.12 | OAuth refresh uses raw HTTP/1.1 over TLS through proxy CONNECT tunnel — Node 22's built-in `fetch()` ignores `HTTPS_PROXY`, and `https.request` with `createConnection` drops the `Host` header (HTTP 520). JSON body with `client_id` required by Anthropic refresh endpoint | MUST |
-| REQ-17.13 | `~/.claude/.credentials.json` permissions set to `666` (all rw) — host user is uid 1001, gateway pod runs as uid 1000. Pod MUST write back refreshed tokens; Anthropic rotates refresh tokens on use, and failure to persist the new one invalidates on-disk credentials. CronJob and token-sync.js use `{ mode: 0o666 }` on writes | MUST |
+| REQ-17.13 | `~/.claude/.credentials.json` permissions set to `666` (all rw) — host user is uid 1001, gateway pod runs as uid 1000. Claude Code CLI writes refreshed tokens; pod only reads. Host crontab (`* * * * * chmod 666`) counteracts CLI resetting permissions to 600 on writes | MUST |
 | REQ-17.14 | Credentials hostPath uses **directory mount** (`~/.claude/` → `/creds/`) NOT single-file mount — prevents stale-inode bug where pod sees deleted file after host rewrites credentials.json (new inode). Directory mounts resolve filename on each read | MUST |
 | REQ-17.15 | `oauth-refresh.sh` (legacy host script) does NOT restart the gateway pod — token-sync.js distributes refreshed tokens live via auth-profiles.json. Pod restarts cause 2.5-minute downtime for all agents | MUST |
 
@@ -375,10 +375,10 @@ A self-hosted, scalable multi-agent AI system built on OpenClaw that starts as a
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | REQ-22.1 | The gateway Deployment NAS volumeMount MUST set `mountPropagation: HostToContainer` — without it the container bind-mount captures the empty host mount point (mode `0000`) instead of the NFS filesystem, causing EACCES for all NAS access inside pods | MUST |
-| REQ-22.2 | Synology NFS squash MUST be set to **"No mapping"** (Synology's label for no-squash — UIDs pass through unchanged). Root squash blocks uid=1000 at the protocol level. Note: even with "No mapping", Synology NFSv4 ACLs can still block uid=1000 — the nas-chmod initContainer (REQ-22.5) is the authoritative fix | MUST |
+| REQ-22.2 | Synology NFS squash MUST be set to **"No mapping"** (Synology's label for no-squash — UIDs pass through unchanged). Root squash blocks uid=1000 at the protocol level. Note: even with "No mapping", Synology NFSv4 ACLs can still block uid=1000 — the `init-permissions` initContainer (REQ-28.2) is the authoritative fix | MUST |
 | REQ-22.3 | All agents MUST have `agents.defaults.memorySearch` configured with `provider: "gemini"` to enable semantic memory search across conversation history and stored memories | MUST |
 | REQ-22.4 | The local SSD fallback at `/home/ocl-local/agents/` (owned by uid=1000) provides writable scratch space for agents when NAS is unavailable; the `ocl-nas-sync` CronJob (running as root) syncs it to the NAS | SHOULD |
-| REQ-22.5 | The gateway Deployment MUST include a `nas-chmod` initContainer (runs as `runAsUser: 0`) that executes `chmod a+rx /mnt/nas` before the main container starts — this resets any Synology NFSv4 ACL restrictions that would otherwise block uid=1000. The pod-level `runAsNonRoot: true` must be omitted to allow the init container to run as root; the main container still runs as `runAsUser: 1000` | MUST |
+| REQ-22.5 | The gateway Deployment MUST include an `init-permissions` initContainer (runs as `runAsUser: 0`) that executes `chmod a+rx /mnt/nas` and `chown 1000:1000 /state` (openclaw-state dir) before the main container starts — this resets Synology NFSv4 ACL restrictions and ensures the persistent state directory is writable by uid=1000. The pod-level `runAsNonRoot: true` must be omitted to allow the init container to run as root; the main container still runs as `runAsUser: 1000` | MUST |
 
 ### REQ-23: Telegram Group Chat Configuration
 
@@ -1001,9 +1001,9 @@ Check it's not already running (prevent duplicates):
 - [ ] Cloud agents have local buffer queue for Redis split-brain resilience
 - [ ] Anthropic Max OAuth token stored in `anthropic-oauth` K8s Secret (access + refresh + expires)
 - [ ] OpenAI Codex OAuth tokens stored in `openai-codex-oauth` K8s Secret — never in cmdline args
-- [ ] `anthropic-oauth-refresh` CronJob (every 30m) — safety-net token refresh + k8s Secret sync
+- [ ] `anthropic-oauth-refresh` CronJob (every 30m) — read-only sync to k8s Secret (no refresh, CLI-only)
 - [ ] `codex-oauth-refresh` CronJob (every 4h) — Codex OAuth token sync
-- [ ] `token-sync.js` background process in gateway pod — 60s auto-refresh + auth-profiles.json update
+- [ ] `token-sync.js` background process in gateway pod — 60s read-only distribution to auth-profiles.json (no refresh)
 - [ ] `console.anthropic.com`, `chatgpt.com`, `auth.openai.com` in egress whitelist for OAuth refresh
 - [ ] Egress proxy uses allow-by-default model: unknown domains allowed through full DLP, not blocked
 - [ ] Reddit/X API domains in trusted fast-path list (oauth.reddit.com, api.x.com, etc.)
