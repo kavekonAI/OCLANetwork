@@ -3631,7 +3631,7 @@ deploy_management_tools() {
     cat > "${SCRIPTS_DIR}/ocl-nuke" << 'NUKEOF'
 #!/bin/bash
 # k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG=/home/ocl/.kube/config
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
@@ -3639,7 +3639,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 secure_cleanup() {
     echo "Performing secure cleanup..."
     local key_patterns=("sk-ant-" "sk-proj-" "sk-or-" "eyJ" "JWT_SIGNING")
-    local search_dirs=("${HOME}/.ocl-setup" "${HOME}/ocl-deploy")
+    local search_dirs=("/home/ocl/.ocl-setup" "/home/ocl/ocl-deploy")
 
     # [DF1] NFS-aware secure wipe: shred is ineffective on network filesystems
     # because NFS does not guarantee same-sector overwrite. Use truncate+rm on NFS.
@@ -3690,7 +3690,7 @@ secure_cleanup() {
     sudo find /tmp -maxdepth 2 -name "*.ocl*" -exec shred -u {} \; 2>/dev/null || true
 
     # [L4] Scrub bash history file directly (history -c is a no-op in non-interactive scripts)
-    [ -f "${HOME}/.bash_history" ] && { sed -i.bak '/sk-ant-\|sk-proj-\|sk-or-\|ANTHROPIC_API/d' "${HOME}/.bash_history" 2>/dev/null && rm -f "${HOME}/.bash_history.bak"; } 2>/dev/null || true
+    [ -f "/home/ocl/.bash_history" ] && { sed -i.bak '/sk-ant-\|sk-proj-\|sk-or-\|ANTHROPIC_API/d' "/home/ocl/.bash_history" 2>/dev/null && rm -f "/home/ocl/.bash_history.bak"; } 2>/dev/null || true
     echo "Secure cleanup complete."
 }
 
@@ -3844,8 +3844,8 @@ NUKEOF
     cat > "${SCRIPTS_DIR}/ocl-health" << 'HEALTHEOF'
 #!/bin/bash
 # k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
-export KUBECONFIG="${HOME}/.kube/config"
-OCL_STATE="${HOME}/.ocl-setup/state.yaml"
+export KUBECONFIG=/home/ocl/.kube/config
+OCL_STATE=/home/ocl/.ocl-setup/state.yaml
 
 echo "═══ OCL Agent Network Health ═══"
 echo ""
@@ -3904,8 +3904,8 @@ HEALTHEOF
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 # k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
-export KUBECONFIG="${HOME}/.kube/config"
-OCL_STATE="${HOME}/.ocl-setup/state.yaml"
+export KUBECONFIG=/home/ocl/.kube/config
+OCL_STATE=/home/ocl/.ocl-setup/state.yaml
 
 TARGET="${1:-}"
 if [ -z "$TARGET" ]; then
@@ -3958,7 +3958,7 @@ echo -e "  ${YELLOW}or restart will use the startup script's proxy-init.js fallb
 # 4. Check skill compatibility (search both template and SKILL.md formats)
 echo "  Checking skill compatibility..."
 COMPAT_FAIL=false
-for skill_dir in "${HOME}/ocl-deploy/templates/skills" "${HOME}/ocl-deploy/skills"; do
+for skill_dir in "/home/ocl/ocl-deploy/templates/skills" "/home/ocl/ocl-deploy/skills"; do
     [ -d "$skill_dir" ] || continue
     for skill_file in "$skill_dir"/*/template.yaml "$skill_dir"/*/SKILL.md; do
         [ -f "$skill_file" ] || continue
@@ -4076,7 +4076,7 @@ UPGRADEEOF
     cat > "${SCRIPTS_DIR}/ocl-pause" << 'PAUSEEOF'
 #!/bin/bash
 # k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG=/home/ocl/.kube/config
 set -euo pipefail
 AGENT="${1:-}"
 if [ -z "$AGENT" ]; then
@@ -4098,7 +4098,7 @@ PAUSEEOF
     cat > "${SCRIPTS_DIR}/ocl-resume" << 'RESUMEEOF'
 #!/bin/bash
 # k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG=/home/ocl/.kube/config
 set -euo pipefail
 AGENT="${1:-}"
 if [ -z "$AGENT" ]; then
@@ -4120,7 +4120,7 @@ RESUMEEOF
     cat > "${SCRIPTS_DIR}/ocl-restart" << 'RESTARTEOF'
 #!/bin/bash
 # k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG=/home/ocl/.kube/config
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 TARGET="${1:-}"
@@ -4168,7 +4168,7 @@ RESTARTEOF
     cat > "${SCRIPTS_DIR}/ocl-start" << 'STARTEOF'
 #!/bin/bash
 # k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG=/home/ocl/.kube/config
 set -euo pipefail
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 AGENT="${2:-${1:-}}"
@@ -4202,9 +4202,14 @@ STARTEOF
     # ── ocl-start-all / ocl-stop-all (start/stop entire OCLAN stack) ──
     cat > "${SCRIPTS_DIR}/ocl-start-all" << 'STARTALLEOF'
 #!/bin/bash
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG=/home/ocl/.kube/config
 set -euo pipefail
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+
+if ! kubectl cluster-info >/dev/null 2>&1; then
+  echo -e "${YELLOW}ERROR: Cannot reach k8s API. Is k3s running?${NC}"
+  exit 1
+fi
 
 echo -e "${GREEN}Starting all OCLAN services...${NC}"
 
@@ -4241,9 +4246,14 @@ STARTALLEOF
 
     cat > "${SCRIPTS_DIR}/ocl-stop-all" << 'STOPALLEOF'
 #!/bin/bash
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG=/home/ocl/.kube/config
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
+
+if ! kubectl cluster-info >/dev/null 2>&1; then
+  echo -e "${RED}ERROR: Cannot reach k8s API. Is k3s running?${NC}"
+  exit 1
+fi
 
 echo -e "${RED}Stopping all OCLAN services...${NC}"
 
@@ -4278,12 +4288,12 @@ STOPALLEOF
     cat > "${SCRIPTS_DIR}/ocl-enable" << 'ENABLEEOF'
 #!/bin/bash
 # k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG=/home/ocl/.kube/config
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 FEATURE="${1:-}"
-OCL_STATE="${HOME}/.ocl-setup/state.yaml"
-OCL_DEPLOY="${HOME}/ocl-deploy"
+OCL_STATE=/home/ocl/.ocl-setup/state.yaml
+OCL_DEPLOY=/home/ocl/ocl-deploy
 K8S_DIR="${OCL_DEPLOY}/k8s"
 
 case "$FEATURE" in
@@ -4361,7 +4371,7 @@ ENABLEEOF
     cat > "${SCRIPTS_DIR}/ocl-unlock" << 'UNLOCKEOF'
 #!/bin/bash
 # k3s kubectl defaults to /etc/rancher/k3s/k3s.yaml (root-only); use user kubeconfig instead.
-export KUBECONFIG="${HOME}/.kube/config"
+export KUBECONFIG=/home/ocl/.kube/config
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
