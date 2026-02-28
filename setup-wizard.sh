@@ -3457,49 +3457,36 @@ HOOKSCFG
               done
               echo "Auth profiles written for: anthropic, openai, openai-codex, google"
               echo "OpenClaw version: \$(node /host-openclaw/openclaw.mjs --version 2>/dev/null || echo \${OCL_PINNED_VERSION})"
-              # ── Background token-sync + auto-refresh ────────────────────────
-              # Runs every 60s: syncs token changes + auto-refreshes when <2h from expiry
-              # via CONNECT tunnel through egress proxy. Worst-case latency: 60 seconds.
-              # CronJob (every 30m) is a safety-net backup only.
+              # ── Background token-sync (read-only distributor) ────────────────
+              # Runs every 60s: reads credentials.json and distributes to agent auth-profiles.
+              # Does NOT refresh tokens — Claude Code CLI is the sole token refresher.
+              # CronJob (every 30m) syncs to k8s secret for pod restart bootstrap only.
+              # token-sync: READ-ONLY distributor. Does NOT refresh tokens.
+              # Claude Code CLI on the host is the sole token refresher.
+              # CronJob is the backup refresher (runs on host schedule).
+              # token-sync only reads credentials.json and distributes to agent auth-profiles.
+              # This eliminates the race condition where multiple processes try to use
+              # the same single-use refresh token simultaneously.
               cat > /tmp/token-sync.js << 'TOKEN_SYNC_EOF'
-const fs=require('fs'),http=require('http'),tls=require('tls');
-const CID='9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const PH='egress-proxy-service.ocl-services',PP=8080;
+const fs=require('fs');
 const CP='/creds/.credentials.json',AB='/home/node/.openclaw/agents';
-let lastTok='',refreshing=false,failCount=0,lastFailLog=0;
-async function sync(){
+let lastTok='',lastWarn=0;
+function sync(){
   try{
     if(!fs.existsSync(CP))return;
     const creds=JSON.parse(fs.readFileSync(CP,'utf8'));
     const oa=creds.claudeAiOauth;if(!oa||!oa.accessToken)return;
     const em=Math.floor((oa.expiresAt-Date.now())/60000);
-    if(em<120&&!refreshing&&oa.refreshToken){
-      refreshing=true;
-      if(failCount<3)console.log('[token-sync] Token expires in '+em+'m, refreshing...');
-      try{
-        const b=JSON.stringify({grant_type:'refresh_token',client_id:CID,refresh_token:oa.refreshToken});
-        const r=await proxy('console.anthropic.com','/v1/oauth/token',b);
-        const d=JSON.parse(r);
-        if(d.access_token){
-          oa.accessToken=d.access_token;
-          if(d.refresh_token)oa.refreshToken=d.refresh_token;
-          if(d.expires_in)oa.expiresAt=Date.now()+d.expires_in*1000;
-          creds.claudeAiOauth=oa;
-          fs.writeFileSync(CP,JSON.stringify(creds),{mode:0o666});
-          lastTok='';failCount=0;
-          console.log('[token-sync] Refreshed! Expires in '+Math.floor((oa.expiresAt-Date.now())/60000)+'m');
-        }else{console.error('[token-sync] No access_token in response');}
-      }catch(e){
-        failCount++;
-        const now=Date.now();
-        if(failCount<=3||(now-lastFailLog)>600000){
-          console.error('[token-sync] Refresh failed (attempt #'+failCount+'): '+e.message);
-          if(failCount>=3&&(now-lastFailLog)>600000)console.error('[token-sync] ACTION REQUIRED: run /login in Claude Code CLI to get fresh tokens');
-          lastFailLog=now;
-        }
+    // Warn (once per 10min) if token is expired or expiring soon
+    if(em<30){
+      const now=Date.now();
+      if((now-lastWarn)>600000){
+        if(em<0)console.error('[token-sync] Token EXPIRED '+(-em)+'m ago — run /login in Claude Code CLI');
+        else console.warn('[token-sync] Token expires in '+em+'m — Claude Code CLI should auto-refresh');
+        lastWarn=now;
       }
-      refreshing=false;
-    }else if(em>=120&&failCount>0){failCount=0;}
+    }
+    // Distribute token to all agent auth-profiles
     if(oa.accessToken!==lastTok){
       let u=0;
       try{const dirs=fs.readdirSync(AB,{withFileTypes:true}).filter(d=>d.isDirectory()).map(d=>AB+'/'+d.name+'/agent/auth-profiles.json');
@@ -3508,24 +3495,11 @@ async function sync(){
         p.profiles.anthropic.expires=oa.expiresAt||0;fs.writeFileSync(pp,JSON.stringify(p));fs.chmodSync(pp,0o600);u++;}
       }catch(e){}}}catch(e){}
       lastTok=oa.accessToken;
-      console.log('[token-sync] Updated '+u+' profiles (expires '+Math.floor((oa.expiresAt-Date.now())/60000)+'m)');
+      console.log('[token-sync] Updated '+u+' agent profiles (expires in '+em+'m)');
     }
   }catch(e){console.error('[token-sync] Error:',e.message);}
 }
-function proxy(h,p,b){return new Promise((ok,no)=>{
-  const t=setTimeout(()=>no(new Error('timeout')),30000);
-  const pr=http.request({host:PH,port:PP,method:'CONNECT',path:h+':443'});
-  pr.on('connect',(res,sock)=>{if(res.statusCode!==200){clearTimeout(t);sock.destroy();no(new Error('CONNECT '+res.statusCode));return;}
-    const ts=tls.connect({socket:sock,servername:h},()=>{
-      ts.write(['POST '+p+' HTTP/1.1','Host: '+h,'Content-Type: application/json','Content-Length: '+Buffer.byteLength(b),'Connection: close','',b].join('\r\n'));
-      let r='';ts.on('data',c=>r+=c.toString());
-      ts.on('end',()=>{clearTimeout(t);const m=r.match(/^HTTP\/[\d.]+ (\d+)/);const s=m?parseInt(m[1]):0;
-        const i=r.indexOf('\r\n\r\n');const rb=i>=0?r.substring(i+4):r;
-        if(s>=400)no(new Error('HTTP '+s+': '+rb.substring(0,300)));else ok(rb);});
-    });ts.on('error',e=>{clearTimeout(t);no(e);});
-  });pr.on('error',e=>{clearTimeout(t);no(e);});pr.end();
-});}
-setTimeout(()=>{sync();setInterval(sync,60000);console.log('[token-sync] Active: 60s sync+refresh');},30000);
+setTimeout(()=>{sync();setInterval(sync,60000);console.log('[token-sync] Active: 60s read-only sync (no refresh — CLI handles that)');},30000);
 TOKEN_SYNC_EOF
               node /tmp/token-sync.js &
               # proxy-init.js was already created at the start of this script.
@@ -4528,9 +4502,12 @@ subjects:
     namespace: ocl-agents
 RBACEOF
 
-    # ── Anthropic OAuth refresh CronJob ────────────────────────────────
-    # Reads ~/.claude/.credentials.json (updated by Claude Code in background),
-    # patches the anthropic-oauth secret, and restarts the gateway.
+    # ── Anthropic OAuth secret-sync CronJob ────────────────────────────
+    # READ-ONLY: Does NOT refresh tokens. Claude Code CLI is the sole refresher.
+    # This CronJob only reads credentials.json and syncs to k8s secret
+    # (so pod restarts get fresh bootstrap tokens from env vars).
+    # Eliminates race condition: multiple processes using single-use refresh tokens
+    # caused invalid_grant loops (Anthropic rotates refresh token on each use).
     kubectl apply -f- >/dev/null 2>&1 << 'ANTHEOF'
 apiVersion: batch/v1
 kind: CronJob
@@ -4566,119 +4543,35 @@ spec:
             args:
             - |
               const fs = require('fs');
-              const http = require('http');
               const https = require('https');
-              const tls = require('tls');
-
-              const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-              const PROXY_HOST = 'egress-proxy-service.ocl-services';
-              const PROXY_PORT = 8080;
 
               async function main() {
                 const credsRaw = fs.readFileSync('/creds/.credentials.json', 'utf8');
                 const creds = JSON.parse(credsRaw);
                 const oauth = creds.claudeAiOauth;
+                if (!oauth || !oauth.accessToken) {
+                  console.error('[oauth-sync] No token in credentials.json — run /login in Claude Code CLI');
+                  process.exit(1);
+                }
                 const expiresIn = Math.floor((oauth.expiresAt - Date.now()) / 60000);
-                console.log(`[oauth-refresh] Token expires in ${expiresIn} minutes`);
+                console.log(`[oauth-sync] Token expires in ${expiresIn} minutes`);
 
-                let tokenToUse = oauth.accessToken;
-                let refreshToken = oauth.refreshToken;
-                let expiresAt = oauth.expiresAt;
-                let refreshed = false;
-
-                if (expiresIn < 120) {
-                  console.log('[oauth-refresh] Token expiring soon, refreshing...');
-                  try {
-                    const reqBody = JSON.stringify({
-                      grant_type: 'refresh_token',
-                      client_id: CLIENT_ID,
-                      refresh_token: refreshToken
-                    });
-                    const respBody = await httpsViaProxy('console.anthropic.com', '/v1/oauth/token', reqBody);
-                    const data = JSON.parse(respBody);
-                    if (data.access_token) {
-                      tokenToUse = data.access_token;
-                      if (data.refresh_token) refreshToken = data.refresh_token;
-                      if (data.expires_in) expiresAt = Date.now() + data.expires_in * 1000;
-                      refreshed = true;
-                      console.log('[oauth-refresh] Got fresh token, expires in', data.expires_in, 'seconds');
-                    } else {
-                      console.error('[oauth-refresh] No access_token in response:', respBody.substring(0, 200));
-                      if (expiresIn <= 0) process.exit(1);
-                    }
-                  } catch (e) {
-                    console.error(`[oauth-refresh] REFRESH FAILED: ${e.message}`);
-                    if (expiresIn <= 0) process.exit(1);
-                  }
-                } else {
-                  console.log('[oauth-refresh] Token still valid (>2h), syncing');
+                if (expiresIn <= 0) {
+                  console.error('[oauth-sync] Token EXPIRED — run /login in Claude Code CLI');
                 }
 
-                // Write refreshed tokens back to credentials.json (single source of truth).
-                // Both Claude Code and the gateway background loop read this file.
-                if (refreshed) {
-                  creds.claudeAiOauth.accessToken = tokenToUse;
-                  creds.claudeAiOauth.refreshToken = refreshToken;
-                  creds.claudeAiOauth.expiresAt = expiresAt;
-                  fs.writeFileSync('/creds/.credentials.json', JSON.stringify(creds), { mode: 0o666 });
-                  console.log('[oauth-refresh] credentials.json updated on host (mode 666)');
-                }
-
-                // Also sync to k8s secret (for pod restarts / env var bootstrap)
+                // Sync current token (even if expired) to k8s secret for pod restart bootstrap
                 const saToken = fs.readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/token', 'utf8');
                 await k8sPatch('/api/v1/namespaces/ocl-agents/secrets/anthropic-oauth',
                   JSON.stringify({ data: {
-                    ANTHROPIC_OAUTH_TOKEN: b64(tokenToUse),
-                    ANTHROPIC_REFRESH_TOKEN: b64(refreshToken),
-                    ANTHROPIC_OAUTH_EXPIRES: b64(String(expiresAt))
+                    ANTHROPIC_OAUTH_TOKEN: b64(oauth.accessToken),
+                    ANTHROPIC_REFRESH_TOKEN: b64(oauth.refreshToken || ''),
+                    ANTHROPIC_OAUTH_EXPIRES: b64(String(oauth.expiresAt))
                   }}), saToken);
-                console.log('[oauth-refresh] k8s secret updated');
+                console.log('[oauth-sync] k8s secret synced (no refresh — CLI handles that)');
               }
 
               function b64(s) { return Buffer.from(s).toString('base64'); }
-
-              // Raw HTTP/1.1 over TLS through egress proxy CONNECT tunnel.
-              // Node 22 https.request with createConnection drops Host header (causes 520).
-              function httpsViaProxy(host, path, body) {
-                return new Promise((resolve, reject) => {
-                  const proxyReq = http.request({
-                    host: PROXY_HOST, port: PROXY_PORT,
-                    method: 'CONNECT', path: `${host}:443`
-                  });
-                  proxyReq.on('connect', (proxyRes, socket) => {
-                    if (proxyRes.statusCode !== 200) {
-                      socket.destroy();
-                      reject(new Error(`Proxy CONNECT ${proxyRes.statusCode}`));
-                      return;
-                    }
-                    const tlsSocket = tls.connect({ socket, servername: host }, () => {
-                      const reqLines = [
-                        `POST ${path} HTTP/1.1`,
-                        `Host: ${host}`,
-                        'Content-Type: application/json',
-                        `Content-Length: ${Buffer.byteLength(body)}`,
-                        'Connection: close',
-                        '',
-                        body
-                      ].join('\r\n');
-                      tlsSocket.write(reqLines);
-                      let resp = '';
-                      tlsSocket.on('data', c => resp += c.toString());
-                      tlsSocket.on('end', () => {
-                        const statusMatch = resp.match(/^HTTP\/[\d.]+ (\d+)/);
-                        const status = statusMatch ? parseInt(statusMatch[1]) : 0;
-                        const bodyStart = resp.indexOf('\r\n\r\n');
-                        const respBody = bodyStart >= 0 ? resp.substring(bodyStart + 4) : resp;
-                        if (status >= 400) reject(new Error(`HTTP ${status}: ${respBody.substring(0, 300)}`));
-                        else resolve(respBody);
-                      });
-                    });
-                    tlsSocket.on('error', reject);
-                  });
-                  proxyReq.on('error', reject);
-                  proxyReq.end();
-                });
-              }
 
               function k8sPatch(path, body, token) {
                 return new Promise((resolve, reject) => {
@@ -4705,7 +4598,7 @@ spec:
               main().catch(e => { console.error(e); process.exit(1); });
 ANTHEOF
 
-    ok "anthropic-oauth-refresh CronJob deployed (every 30m)"
+    ok "anthropic-oauth-refresh CronJob deployed (every 30m — sync-only, no refresh)"
 
     # ── OpenAI Codex OAuth refresh CronJob (only if Codex OAuth is active) ──
     if [ "${HAS_CODEX_OAUTH:-false}" = "true" ]; then

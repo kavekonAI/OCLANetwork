@@ -1,9 +1,10 @@
 #!/bin/bash
-# Sync Claude OAuth token from credentials.json to k8s secret (LEGACY — backup only)
-# Primary refresh is handled by:
-#   1. token-sync.js (inside gateway pod, every 60s, auto-refreshes via Anthropic API)
-#   2. anthropic-oauth-refresh CronJob (every 30m, refreshes + updates secret)
-# This script does NOT restart the gateway — token-sync.js picks up changes live.
+# Sync Claude OAuth token from credentials.json to k8s secret (LEGACY — manual backup only)
+# Token architecture (no race conditions):
+#   1. Claude Code CLI — SOLE token refresher (auto-refreshes before expiry)
+#   2. token-sync.js (inside gateway pod, every 60s) — READ-ONLY, distributes to agents
+#   3. anthropic-oauth-refresh CronJob (every 30m) — READ-ONLY, syncs to k8s secret
+# This script does NOT refresh — just syncs current credentials.json to k8s secret.
 set -euo pipefail
 export KUBECONFIG=/home/ocl/.kube/config
 CREDS=/home/ocl/.claude/.credentials.json
