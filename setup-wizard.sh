@@ -3466,7 +3466,7 @@ const fs=require('fs'),http=require('http'),tls=require('tls');
 const CID='9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const PH='egress-proxy-service.ocl-services',PP=8080;
 const CP='/creds/.credentials.json',AB='/home/node/.openclaw/agents';
-let lastTok='',refreshing=false;
+let lastTok='',refreshing=false,failCount=0,lastFailLog=0;
 async function sync(){
   try{
     if(!fs.existsSync(CP))return;
@@ -3475,7 +3475,7 @@ async function sync(){
     const em=Math.floor((oa.expiresAt-Date.now())/60000);
     if(em<120&&!refreshing&&oa.refreshToken){
       refreshing=true;
-      console.log('[token-sync] Token expires in '+em+'m, refreshing...');
+      if(failCount<3)console.log('[token-sync] Token expires in '+em+'m, refreshing...');
       try{
         const b=JSON.stringify({grant_type:'refresh_token',client_id:CID,refresh_token:oa.refreshToken});
         const r=await proxy('console.anthropic.com','/v1/oauth/token',b);
@@ -3486,12 +3486,20 @@ async function sync(){
           if(d.expires_in)oa.expiresAt=Date.now()+d.expires_in*1000;
           creds.claudeAiOauth=oa;
           fs.writeFileSync(CP,JSON.stringify(creds),{mode:0o666});
-          lastTok='';
+          lastTok='';failCount=0;
           console.log('[token-sync] Refreshed! Expires in '+Math.floor((oa.expiresAt-Date.now())/60000)+'m');
         }else{console.error('[token-sync] No access_token in response');}
-      }catch(e){console.error('[token-sync] Refresh failed:',e.message);}
+      }catch(e){
+        failCount++;
+        const now=Date.now();
+        if(failCount<=3||(now-lastFailLog)>600000){
+          console.error('[token-sync] Refresh failed (attempt #'+failCount+'): '+e.message);
+          if(failCount>=3&&(now-lastFailLog)>600000)console.error('[token-sync] ACTION REQUIRED: run /login in Claude Code CLI to get fresh tokens');
+          lastFailLog=now;
+        }
+      }
       refreshing=false;
-    }
+    }else if(em>=120&&failCount>0){failCount=0;}
     if(oa.accessToken!==lastTok){
       let u=0;
       try{const dirs=fs.readdirSync(AB,{withFileTypes:true}).filter(d=>d.isDirectory()).map(d=>AB+'/'+d.name+'/agent/auth-profiles.json');
