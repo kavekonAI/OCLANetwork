@@ -4199,6 +4199,81 @@ STARTEOF
 
     ok "ocl-pause, ocl-resume, ocl-restart, ocl-start installed"
 
+    # ── ocl-start-all / ocl-stop-all (start/stop entire OCLAN stack) ──
+    cat > "${SCRIPTS_DIR}/ocl-start-all" << 'STARTALLEOF'
+#!/bin/bash
+export KUBECONFIG="${HOME}/.kube/config"
+set -euo pipefail
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+
+echo -e "${GREEN}Starting all OCLAN services...${NC}"
+
+# 1. Infrastructure first (Redis + egress proxy)
+echo -n "  Redis...          "
+kubectl scale deployment redis -n ocl-services --replicas=1 >/dev/null 2>&1 && echo -e "${GREEN}✓${NC}" || echo "skip"
+echo -n "  Egress proxy...   "
+kubectl scale deployment egress-proxy -n ocl-services --replicas=1 >/dev/null 2>&1 && echo -e "${GREEN}✓${NC}" || echo "skip"
+
+# 2. Wait for Redis to be ready (gateway needs it)
+echo -n "  Waiting for Redis..."
+kubectl rollout status deployment/redis -n ocl-services --timeout=60s >/dev/null 2>&1 && echo -e " ${GREEN}ready${NC}" || echo -e " ${YELLOW}timeout${NC}"
+
+# 3. Gateway (bot + all agents)
+echo -n "  Gateway...        "
+kubectl scale deployment gateway-home -n ocl-agents --replicas=1 >/dev/null 2>&1 && echo -e "${GREEN}✓${NC}" || echo "skip"
+
+# 4. Dashboard
+echo -n "  Dashboard...      "
+kubectl scale deployment dashboard -n ocl-services --replicas=1 >/dev/null 2>&1 && echo -e "${GREEN}✓${NC}" || echo "skip"
+
+# 5. Resume CronJobs
+echo -n "  CronJobs...       "
+kubectl get cronjobs -n ocl-agents -o name 2>/dev/null | xargs -I{} kubectl patch {} -n ocl-agents -p '{"spec":{"suspend":false}}' >/dev/null 2>&1
+kubectl get cronjobs -n ocl-services -o name 2>/dev/null | xargs -I{} kubectl patch {} -n ocl-services -p '{"spec":{"suspend":false}}' >/dev/null 2>&1
+echo -e "${GREEN}✓${NC}"
+
+echo ""
+echo -e "${GREEN}All services started.${NC} Bot takes ~3 min to fully initialize."
+echo "  Run 'ocl-health' to check status."
+STARTALLEOF
+    chmod +x "${SCRIPTS_DIR}/ocl-start-all"
+    sudo ln -sf "${SCRIPTS_DIR}/ocl-start-all" /usr/local/bin/ocl-start-all 2>/dev/null || true
+
+    cat > "${SCRIPTS_DIR}/ocl-stop-all" << 'STOPALLEOF'
+#!/bin/bash
+export KUBECONFIG="${HOME}/.kube/config"
+set -euo pipefail
+RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
+
+echo -e "${RED}Stopping all OCLAN services...${NC}"
+
+# 1. Suspend CronJobs first (prevent new jobs spawning)
+echo -n "  CronJobs...       "
+kubectl get cronjobs -n ocl-agents -o name 2>/dev/null | xargs -I{} kubectl patch {} -n ocl-agents -p '{"spec":{"suspend":true}}' >/dev/null 2>&1
+kubectl get cronjobs -n ocl-services -o name 2>/dev/null | xargs -I{} kubectl patch {} -n ocl-services -p '{"spec":{"suspend":true}}' >/dev/null 2>&1
+echo -e "${GREEN}✓${NC} suspended"
+
+# 2. Gateway (bot + all agents)
+echo -n "  Gateway...        "
+kubectl scale deployment gateway-home -n ocl-agents --replicas=0 >/dev/null 2>&1 && echo -e "${GREEN}✓${NC}" || echo "skip"
+
+# 3. Dashboard
+echo -n "  Dashboard...      "
+kubectl scale deployment dashboard -n ocl-services --replicas=0 >/dev/null 2>&1 && echo -e "${GREEN}✓${NC}" || echo "skip"
+
+# 4. Infrastructure last
+echo -n "  Egress proxy...   "
+kubectl scale deployment egress-proxy -n ocl-services --replicas=0 >/dev/null 2>&1 && echo -e "${GREEN}✓${NC}" || echo "skip"
+echo -n "  Redis...          "
+kubectl scale deployment redis -n ocl-services --replicas=0 >/dev/null 2>&1 && echo -e "${GREEN}✓${NC}" || echo "skip"
+
+echo ""
+echo -e "${RED}All services stopped.${NC} Data is preserved. Run 'ocl-start-all' to resume."
+STOPALLEOF
+    chmod +x "${SCRIPTS_DIR}/ocl-stop-all"
+    sudo ln -sf "${SCRIPTS_DIR}/ocl-stop-all" /usr/local/bin/ocl-stop-all 2>/dev/null || true
+    ok "ocl-start-all, ocl-stop-all installed"
+
     # ── ocl-enable (modular feature enablement — currently supports "optimizer") ──
     cat > "${SCRIPTS_DIR}/ocl-enable" << 'ENABLEEOF'
 #!/bin/bash
